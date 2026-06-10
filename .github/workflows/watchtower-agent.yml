@@ -52,7 +52,12 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: "--max-turns 100"
+          # Build agent needs real tools: git/gh/curl via Bash, file edits.
+          # Without --allowed-tools the action denies everything and the run
+          # "succeeds" as a silent no-op (learned the hard way on run #3).
+          claude_args: >-
+            --max-turns 100
+            --allowed-tools "Bash,Edit,MultiEdit,Write"
           prompt: |
             You are the Watchtower build agent for the Hearth repo.
             Read CLAUDE.md at the repo root first — its rules are binding.
