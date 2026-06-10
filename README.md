@@ -13,7 +13,7 @@ Built autonomously via the **Watchtower loop**: Linear issues labeled
 branch protection on `main` (require PR + 1 review), sets the
 `ANTHROPIC_API_KEY` and `LINEAR_API_KEY` Actions secrets, and dispatches the
 first agent run (BAT-20). It is idempotent — re-run it any time and it only
-does what's missing. The 6-hour cron in
+does what's missing. The 2-hour cron in
 `.github/workflows/watchtower-agent.yml` is live: the agent works the
 highest-priority unblocked `agent-ready` issue, opens a draft PR, and your
 review/merge is what unblocks the next issue in the chain.

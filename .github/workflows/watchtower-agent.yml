@@ -25,7 +25,9 @@ on:
   # branch protection + draft-PR-only. Kill switch: disable this workflow or
   # pull the agent-ready label.
   schedule:
-    - cron: "0 */6 * * *"   # 4 runs/day hard cap by schedule design
+    - cron: "0 */2 * * *"   # 12 runs/day cap (bumped from 6h 2026-06-10 —
+                            # idle runs are ~2 min/$0.10, so the cap mostly
+                            # bounds productive runs, not waste)
 
 concurrency:
   group: watchtower          # never two agent runs at once
