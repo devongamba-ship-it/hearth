@@ -34,6 +34,9 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
+  id-token: write       # claude-code-action exchanges OIDC for its GitHub token
+  actions: read
 
 jobs:
   work-one-issue:
