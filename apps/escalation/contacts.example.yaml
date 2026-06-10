@@ -1,0 +1,27 @@
+# Example contact circle for the escalation cascade.
+#
+# Copy to contacts.yaml (gitignored) and point HEARTH_CONTACTS_FILE at it.
+# Phone numbers here are placeholders — real numbers are not committed.
+#
+# priority: lower number is called first in the T+60s voice ladder.
+# channels: which T+0 broadcast channels reach this contact (sms / push).
+#           voice calls always use the voice number.
+
+home_name: "Rosewood"
+
+contacts:
+  - name: "Dana (daughter)"
+    sms: "+15555550101"
+    voice: "+15555550101"
+    priority: 1
+    channels: ["sms", "push"]
+
+  - name: "Marcus (neighbor)"
+    sms: "+15555550102"
+    priority: 2
+    channels: ["sms"]
+
+  - name: "Pat (son)"
+    sms: "+15555550103"
+    priority: 3
+    channels: ["sms", "push"]
