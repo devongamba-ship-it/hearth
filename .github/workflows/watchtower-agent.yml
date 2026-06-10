@@ -65,9 +65,11 @@ jobs:
             Target Linear issue: ${{ inputs.issue_id || 'SELECT: the highest-priority issue labeled agent-ready that is in a Backlog or Todo state (NOT In Progress, NOT In Review, NOT Done) and whose blockers are all Done. If no issue qualifies, print why and exit without writing code.' }}
 
             Use the Linear API (key in LINEAR_API_KEY env) to:
-            1. Fetch the issue. VERIFY it carries the `agent-ready` label and its
-               blockers are Done. If not, comment on the issue explaining why you
-               stopped, and exit without writing code.
+            1. Fetch the issue AND its comments. Comments marked "CANONICAL
+               DESIGN UPDATE" supersede the description where they conflict.
+               VERIFY the issue carries the `agent-ready` label and its
+               blockers are Done. If not, comment on the issue explaining why
+               you stopped, and exit without writing code.
             2. Move it to "In Progress".
 
             Then:
