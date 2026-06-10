@@ -1,0 +1,78 @@
+# Watchtower Agent — autonomous build loop for Hearth
+#
+# v1 SAFETY POSTURE (per our design):
+#   - Runs 24/7 on a 6-hour cron (4/day cap) plus manual workflow_dispatch.
+#     Drafts pile up for human review; nothing merges itself.
+#   - One Linear issue per run. Issue must carry the `agent-ready` label.
+#   - Output is always a DRAFT PR. Branch protection on `main` (require PR +
+#     passing CI + your review) is the safety floor — set it up FIRST.
+#   - Kill switch: disable this workflow, or pull the `agent-ready` label.
+#
+# Required repo secrets:
+#   ANTHROPIC_API_KEY  — for the Claude Code action
+#   LINEAR_API_KEY     — personal API key (Linear → Settings → API)
+
+name: Watchtower Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_id:
+        description: "Linear issue ID to work (e.g. BAT-21). Must be labeled agent-ready."
+        required: true
+        type: string
+  # 24/7 autonomous mode (enabled 2026-06-09 per Devon). Safety floor is
+  # branch protection + draft-PR-only. Kill switch: disable this workflow or
+  # pull the agent-ready label.
+  schedule:
+    - cron: "0 */6 * * *"   # 4 runs/day hard cap by schedule design
+
+concurrency:
+  group: watchtower          # never two agent runs at once
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  work-one-issue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45      # cost + runaway cap
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code on one agent-ready issue
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: "--max-turns 100"
+          prompt: |
+            You are the Watchtower build agent for the Hearth repo.
+            Read CLAUDE.md at the repo root first — its rules are binding.
+
+            Target Linear issue: ${{ inputs.issue_id || 'SELECT: the highest-priority issue labeled agent-ready that is in a Backlog or Todo state (NOT In Progress, NOT In Review, NOT Done) and whose blockers are all Done. If no issue qualifies, print why and exit without writing code.' }}
+
+            Use the Linear API (key in LINEAR_API_KEY env) to:
+            1. Fetch the issue. VERIFY it carries the `agent-ready` label and its
+               blockers are Done. If not, comment on the issue explaining why you
+               stopped, and exit without writing code.
+            2. Move it to "In Progress".
+
+            Then:
+            3. Create branch using the issue's gitBranchName.
+            4. Implement EXACTLY the issue scope. Write the tests named in its
+               acceptance criteria. Run the test suite locally until green.
+            5. Open a DRAFT pull request titled "[<issue-id>] <issue title>"
+               with a summary, test evidence, and any assumptions you made.
+            6. Comment the PR link on the Linear issue and move it to "In Review".
+
+            Hard rules (also in CLAUDE.md): one issue per run; never push to
+            main; never mark your own PR ready-for-review; never touch issues
+            without the agent-ready label; if the issue is ambiguous, ask via a
+            Linear comment and stop rather than guess.
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}

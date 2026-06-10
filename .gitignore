@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.sqlite
+*.db
+.env
+node_modules/
+dist/
+.pytest_cache/
+.ruff_cache/
+state.json
+docs/concept.md
