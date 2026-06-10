@@ -11,3 +11,7 @@ dist/
 .ruff_cache/
 state.json
 docs/concept.md
+
+# Python editable-install build metadata
+*.egg-info/
+build/
