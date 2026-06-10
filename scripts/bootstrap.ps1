@@ -28,13 +28,23 @@ if (-not (git remote | Select-String -Quiet "^origin$")) {
 git push -u origin main
 if ($LASTEXITCODE -ne 0) { Write-Error "push failed"; exit 1 }
 
-# 3. Branch protection (requires public repo or GitHub Pro on private)
-$protection = '{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}'
-$protection | gh api -X PUT "repos/$repo/branches/main/protection" --input - | Out-Null
+# 3. Branch protection (requires public repo or GitHub Pro on private).
+# Body goes via temp file: PS 5.1 mangles JSON piped to native stdin.
+gh api "repos/$repo/branches/main/protection" --silent
 if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Branch protection refused (private repo on free plan)."
-    Write-Warning "  a) gh repo edit $repo --visibility public --accept-visibility-change-consequences"
-    Write-Warning "  b) upgrade to GitHub Pro, then re-run this script"
+    $protection = '{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}'
+    $tmp = Join-Path $env:TEMP "hearth-protection.json"
+    [IO.File]::WriteAllText($tmp, $protection)
+    gh api -X PUT "repos/$repo/branches/main/protection" --input $tmp | Out-Null
+    $code = $LASTEXITCODE
+    Remove-Item $tmp -Force
+    if ($code -ne 0) {
+        Write-Warning "Branch protection refused (private repo on free plan?)."
+        Write-Warning "  a) gh repo edit $repo --visibility public --accept-visibility-change-consequences"
+        Write-Warning "  b) upgrade to GitHub Pro, then re-run this script"
+    }
+} else {
+    Write-Host "Branch protection already active - skipping"
 }
 
 # 4. Secrets — only prompt for ones not already set
