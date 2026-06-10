@@ -4,27 +4,10 @@
 Lets the whole downstream stack (ingest -> fall machine -> escalation ->
 caregiver app) be built and tested BEFORE any hardware arrives.
 
-⚠ LAYOUT IS ASSUMED. RuView docs specify: 32-byte packet, magic 0xC5110002,
-1 Hz, containing presence, motion level, breathing BPM, heart rate BPM,
-confidence scores, fall flag, occupancy. The exact byte order must be
-reconciled against firmware/esp32-csi-node/README.md + ADR-039/ADR-044 in
-https://github.com/ruvnet/RuView (tracked in BAT-21). Until then, this file
-defines the contract and the ingest codec MUST import from the same layout.
-
-Assumed little-endian layout (32 bytes):
-  offset  size  field
-  0       4     magic           uint32  = 0xC5110002
-  4       2     node_id         uint16
-  6       4     uptime_ms       uint32
-  10      1     presence        uint8   (0/1)
-  11      1     fall_flag       uint8   (0/1)
-  12      2     motion_score    uint16  (0-10000)
-  14      2     breathing_cbpm  uint16  (BPM x 100)
-  16      2     heart_cbpm      uint16  (BPM x 100)
-  18      1     conf_presence   uint8   (0-100)
-  19      1     conf_vitals     uint8   (0-100)
-  20      1     occupancy       uint8
-  21      11    reserved        zeros
+The byte layout used to live here as an ASSUMED guess. As of BAT-21 the real
+layout was read from RuView's `firmware/esp32-csi-node/README.md` + ADR-039 and
+moved into the shared `hearth.packet` codec, which this simulator and the ingest
+listener now both import — so the two can never drift. See `hearth/packet.py`.
 
 Scenarios:
   normal          person moving around, no events
@@ -41,37 +24,23 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import socket
-import struct
+import sys
 import time
 
-MAGIC = 0xC5110002
-FMT = "<IHIBBHHHBBB11x"  # 32 bytes
-assert struct.calcsize(FMT) == 32
+# Allow `python tools/packet_sim.py` from the repo root to import the shared
+# codec without an install step (the ingest service installs `hearth` properly).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from hearth.packet import MAGIC, Vitals, encode  # noqa: E402
 
-def pack(node_id: int, uptime_ms: int, presence: int, fall: int,
-         motion: int, breath_bpm: float, hr_bpm: float,
-         conf_p: int, conf_v: int, occupancy: int) -> bytes:
-    return struct.pack(
-        FMT, MAGIC, node_id, uptime_ms, presence, fall,
-        max(0, min(10000, motion)),
-        int(breath_bpm * 100), int(hr_bpm * 100),
-        conf_p, conf_v, occupancy,
-    )
-
-
-def unpack(data: bytes) -> dict:
-    """Reference decoder — the ingest codec should match this exactly."""
-    (magic, node_id, uptime_ms, presence, fall, motion,
-     breath_cbpm, hr_cbpm, conf_p, conf_v, occupancy) = struct.unpack(FMT, data)
-    if magic != MAGIC:
-        raise ValueError(f"bad magic: {magic:#x}")
-    return dict(node_id=node_id, uptime_ms=uptime_ms, presence=presence,
-                fall_flag=fall, motion_score=motion,
-                breathing_bpm=breath_cbpm / 100, heart_bpm=hr_cbpm / 100,
-                conf_presence=conf_p, conf_vitals=conf_v, occupancy=occupancy)
+# Constant the simulator stamps onto every packet — the real packet carries an
+# RSSI the firmware measures; scenarios don't model link quality.
+SIM_RSSI = -55
+# Motion-energy above this trips the flags bit2 "motion" indicator.
+MOTION_FLAG_THRESHOLD = 200.0
 
 
 def frames(scenario: str):
@@ -109,6 +78,29 @@ def frames(scenario: str):
         t += 1
 
 
+def frame_to_vitals(node_id: int, uptime_ms: int, f: dict) -> Vitals:
+    """Map a scenario frame onto the real wire fields.
+
+    The scenarios speak in presence/fall/motion/breath/hr/occupancy. The real
+    packet has no separate "vitals confidence" field, so `conf_v` is not
+    transmitted; `conf_p` becomes the firmware's presence score (0..1).
+    """
+    motion_energy = float(f["motion"])
+    return Vitals(
+        node_id=node_id,
+        presence=bool(f["presence"]),
+        fall=bool(f["fall"]),
+        motion=motion_energy > MOTION_FLAG_THRESHOLD,
+        breathing_bpm=float(f["breath"]),
+        heart_bpm=float(f["hr"]),
+        rssi=SIM_RSSI,
+        occupancy=int(f["occ"]),
+        motion_energy=motion_energy,
+        presence_score=f["conf_p"] / 100.0,
+        timestamp_ms=uptime_ms,
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", default="normal")
@@ -124,10 +116,9 @@ def main() -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     uptime = 0
     print(f"[sim] scenario={args.scenario} -> {args.target}:{args.port} "
-          f"node={args.node_id} speed={args.speed}x")
+          f"node={args.node_id} speed={args.speed}x magic={MAGIC:#010x}")
     for i, f in enumerate(frames(args.scenario)):
-        pkt = pack(args.node_id, uptime, f["presence"], f["fall"], f["motion"],
-                   f["breath"], f["hr"], f["conf_p"], f["conf_v"], f["occ"])
+        pkt = encode(frame_to_vitals(args.node_id, uptime, f))
         sock.sendto(pkt, (args.target, args.port))
         if f["fall"]:
             print(f"[sim] t={i}s  *** FALL FLAG SENT ***")

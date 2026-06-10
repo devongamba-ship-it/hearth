@@ -1,8 +1,8 @@
-"""Hearth ingest service (scaffold).
+"""Hearth ingest service.
 
-Receives RuView Tier-2 vitals packets and persists alert-relevant state to a
-local SQLite database. The UDP listener and shared packet codec land in BAT-21;
-this package is the scaffold (FastAPI app + local DB wiring) those build on.
+Receives RuView Tier-2 vitals packets over UDP (`listener.py`), decodes them
+with the shared `hearth.packet` codec, and persists readings + fall events to a
+local SQLite database (`db.py`). The FastAPI app (`app.py`) exposes node status.
 
 Local-first: raw readings stay on the home device. Only alert events and coarse
 status ever leave.

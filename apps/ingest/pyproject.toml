@@ -1,11 +1,12 @@
 [project]
 name = "hearth-ingest"
 version = "0.1.0"
-description = "Hearth ingest service — UDP listener + codec for RuView Tier-2 vitals packets (scaffold)."
+description = "Hearth ingest service — UDP listener + codec for RuView Tier-2 vitals packets."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
     "sqlalchemy>=2.0",
+    "uvicorn>=0.29",
 ]
 
 [project.optional-dependencies]
@@ -19,8 +20,16 @@ dev = [
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+# The shared RuView codec lives at the repo root in `hearth/` (CLAUDE.md: "one
+# module, both the simulator and the ingest listener import it"). Map it in here
+# so `pip install -e .` from this app installs `hearth` alongside `ingest` —
+# this is what makes `import hearth.packet` work in CI, which installs each app
+# independently from its own directory.
 [tool.setuptools]
-packages = ["ingest"]
+packages = ["ingest", "hearth"]
+
+[tool.setuptools.package-dir]
+hearth = "../../hearth"
 
 [tool.ruff]
 line-length = 100
