@@ -1,0 +1,66 @@
+# =============================================================================
+# Hearth CI workflow (BAT-20)
+#
+# ⚠ HUMAN ACTION REQUIRED — one privileged step the build agent could not do.
+#
+# The Watchtower agent's GitHub App token lacks the `workflows` permission, so
+# it cannot push files under `.github/workflows/`. This file holds the exact CI
+# workflow the issue asks for; a human with repo write access must install it:
+#
+#     git mv docs/ci-workflow.yml .github/workflows/ci.yml
+#     git commit -m "ci: add CI workflow (BAT-20, needs workflows permission)"
+#
+# Once installed it runs on every PR: ruff + pytest for apps/ingest and
+# apps/escalation, and `npm run build` for apps/caregiver-web. All three were
+# verified green locally (see the PR body for output).
+# =============================================================================
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: python (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [ingest, escalation]
+    defaults:
+      run:
+        working-directory: apps/${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Test (pytest)
+        run: pytest
+
+  caregiver-web:
+    name: caregiver-web build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/caregiver-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/caregiver-web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Build
+        run: npm run build
