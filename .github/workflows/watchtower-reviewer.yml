@@ -36,6 +36,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Agent PRs are opened by the claude bot; without this the action
+          # refuses bot-initiated events (its own loop protection).
+          allowed_bots: "claude"
           claude_args: >-
             --max-turns 40
             --allowed-tools "Bash"

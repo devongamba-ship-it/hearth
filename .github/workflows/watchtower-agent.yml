@@ -58,7 +58,7 @@ jobs:
           # Without --allowed-tools the action denies everything and the run
           # "succeeds" as a silent no-op (learned the hard way on run #3).
           claude_args: >-
-            --max-turns 100
+            --max-turns 200
             --allowed-tools "Bash,Edit,MultiEdit,Write"
           prompt: |
             You are the Watchtower build agent for the Hearth repo.
