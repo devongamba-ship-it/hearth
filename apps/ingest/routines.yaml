@@ -1,0 +1,53 @@
+# Hearth absence-of-normal-life wellness rules (BAT-24).
+#
+# Per-home tunables for the wellness rules engine. Point the poller at this file
+# with HEARTH_ROUTINES_FILE=/path/to/routines.yaml. Every value here is the
+# built-in default — delete a key to keep the default. This file ships as a
+# documented starting point; the thresholds WILL be tuned per home.
+#
+# Each rule emits a TYPED, SOFT incident (canonical design update §4.5):
+#   morning check        -> wellness.late_start
+#   overnight stillness  -> wellness.prolonged_stillness
+#   extended stillness   -> wellness.prolonged_stillness
+# Soft incidents are SMS-only-tier and never trigger a voice cascade; the
+# per-type response path is owned by the incident registry (BAT-31).
+
+# Optional home label forwarded on the /escalate payload.
+home_name: null
+
+# node_id -> coarse zone label. Rules reference zones by name; an unmapped node
+# has no zone and only counts toward the all-nodes extended-stillness rule.
+zones: {}
+#   1: kitchen
+#   2: living
+#   3: bathroom
+
+# Motion energy at/above this is "real motion"; below it is stillness. Shares the
+# fall machine's stillness default so the two agree on what "moving" means.
+active_motion_threshold: 200.0
+
+# A reading older than this many seconds no longer counts as "presence now".
+presence_staleness_secs: 900
+
+# Rule 1 — morning check: no real motion in these zones by the deadline while
+# presence is detected -> wellness.late_start.
+morning_deadline: "10:30"
+morning_zones: [kitchen, living]
+
+# Rule 2 — overnight stillness: bathroom-zone motion between the window that
+# deviates far below the trailing baseline -> wellness.prolonged_stillness.
+overnight_start: "21:00"
+overnight_end: "08:00"
+overnight_zones: [bathroom]
+baseline_nights: 14          # trailing window the baseline is learned over
+min_baseline_nights: 3       # don't judge a night until we have this much history
+overnight_deviation: 1.0     # fire when (baseline mean - tonight) >= this
+
+# Rule 3 — extended absence of motion: presence true but motion below threshold
+# on ALL nodes for longer than max_still_hours, daytime only.
+max_still_hours: 4.0
+day_start: "08:00"
+day_end: "21:00"
+
+# How often the production poller evaluates the rules.
+eval_interval_secs: 300
