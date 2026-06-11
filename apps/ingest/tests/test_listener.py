@@ -11,7 +11,7 @@ import socket
 
 from sqlalchemy import select
 
-from hearth.packet import MAGIC, Vitals, encode
+from hearth.packet import MAGIC, PACKET_SIZE, Vitals, encode
 from ingest.db import Reading
 from ingest.listener import create_listener
 
@@ -71,12 +71,17 @@ def test_valid_packets_produce_rows(session_factory):
 def test_malformed_packets_dropped_not_crashing(session_factory):
     bad_magic = bytearray(encode(_vitals(1)))
     bad_magic[0] ^= 0xFF
+    # Every malformed fixture is a non-empty datagram: a zero-length UDP send is
+    # not reliably delivered on every OS (Windows may drop it at the socket layer
+    # before it reaches the protocol), which made the count flaky. "Too long" and
+    # "too short" are two distinct violations of decode()'s single size check
+    # (len != PACKET_SIZE) — deterministic on every OS (BAT-32).
     payloads = [
-        b"",                       # empty
-        b"\x00" * 31,              # too short
-        bytes(bad_magic),          # right size, wrong magic
-        b"junk-not-a-packet-aaaa",  # wrong size garbage
-        encode(_vitals(5)),        # a good one still gets through afterwards
+        b"\x00" * (PACKET_SIZE + 1),  # too long
+        b"\x00" * 31,                 # too short
+        bytes(bad_magic),             # right size, wrong magic
+        b"junk-not-a-packet-aaaa",    # wrong size garbage
+        encode(_vitals(5)),           # a good one still gets through afterwards
     ]
     protocol = asyncio.run(_run(session_factory, payloads))
 
