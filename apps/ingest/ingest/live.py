@@ -124,10 +124,12 @@ class LiveFeed:
         with self._sessions() as session:
             latest = self._latest_readings(session)
             node_states = self._node_states(session)
+            # Prime BEFORE reading transitions: otherwise the first tick reads
+            # with _last_txn_id == 0 and replays the entire incident history
+            # into a feed labelled "live" (reviewer concern #1 on PR #7).
+            if not self._primed:
+                self._prime(session, latest, now)
             new_txns = self._new_transitions(session)
-
-        if not self._primed:
-            self._prime(latest, now)
 
         self._update_snapshots(latest, now)
         messages: list[dict] = []
@@ -180,18 +182,18 @@ class LiveFeed:
 
     # -- state updates -------------------------------------------------------
 
-    def _prime(self, latest: dict[int, Reading], now: float) -> None:
+    def _prime(self, session, latest: dict[int, Reading], now: float) -> None:
         """First tick: seed high-water marks so we stream only NEW activity.
 
         Without priming the first tick would replay every historical fall
         transition and immediately flag long-silent nodes as fresh dropouts. We
         treat connect time as "just seen" for known nodes and start the incident
-        stream from the current tail.
+        stream from the current tail. Must run before _new_transitions reads
+        with the high-water mark.
         """
-        with self._sessions() as session:
-            self._last_txn_id = (
-                session.scalar(select(func.max(FallTransition.id))) or 0
-            )
+        self._last_txn_id = (
+            session.scalar(select(func.max(FallTransition.id))) or 0
+        )
         for node_id in latest:
             self._last_seen_at[node_id] = now
         self._primed = True
@@ -322,7 +324,11 @@ class LiveFeed:
         room = resident["room"] if resident else None
         events: list[dict] = []
         if room != self._resident_room:
-            if room is not None:
+            # from_room None means the resident was simply already present at
+            # connect (or reappeared after a vacancy) — not a movement. Emitting
+            # it pushes "moved to <room>" ticker noise on every WS connect
+            # (reviewer concern #2 on PR #7).
+            if room is not None and self._resident_room is not None:
                 events.append({
                     "type": "event",
                     "event": "room_transition",

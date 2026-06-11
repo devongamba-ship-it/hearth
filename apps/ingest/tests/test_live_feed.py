@@ -176,9 +176,8 @@ def test_room_transition_event_when_resident_moves(session_factory):
 
     _persist(session_factory, 1, ts=1000, presence=True, occupancy=1)
     _persist(session_factory, 2, ts=1000, presence=False, occupancy=0)
-    moves = _events(feed.tick(), "room_transition")
-    assert len(moves) == 1
-    assert moves[0]["from_room"] is None and moves[0]["room"] == "kitchen"
+    # Resident already present at connect is not a movement (PR #7 review #2).
+    assert _events(feed.tick(), "room_transition") == []
 
     clock.t = 1
     _persist(session_factory, 1, ts=2000, presence=False, occupancy=0)
@@ -239,6 +238,42 @@ def test_incident_messages_stream_new_transitions(session_factory):
 
     # Already-streamed transitions are not re-emitted next tick.
     assert [m for m in feed.tick() if m["type"] == "incident"] == []
+
+
+def test_priming_tick_does_not_replay_incident_history(session_factory):
+    """PR #7 review concern #1: transitions already in the table at connect
+    must not stream as live incidents on the priming tick."""
+    clock = FakeClock(0)
+    _persist(session_factory, 1)
+    with session_factory() as s:
+        for i, state in enumerate(["SUSPECTED", "PROBABLE"]):
+            s.add(FallTransition(
+                incident_id="inc-old", node_id=1, reading_ts=900 + i,
+                at=float(i), from_state="NORMAL", to_state=state,
+                kind="transition", reason=None, features=None,
+            ))
+        s.commit()
+
+    feed = _feed(session_factory, clock)
+    assert [m for m in feed.tick() if m["type"] == "incident"] == []
+
+    # A genuinely new transition after priming still streams, exactly once.
+    with session_factory() as s:
+        s.add(FallTransition(
+            incident_id="inc-new", node_id=1, reading_ts=1000, at=10.0,
+            from_state="PROBABLE", to_state="CHECK_IN_ACTIVE",
+            kind="transition", reason=None, features=None,
+        ))
+        s.commit()
+    incidents = [m for m in feed.tick() if m["type"] == "incident"]
+    assert [m["incident_id"] for m in incidents] == ["inc-new"]
+
+
+def test_no_room_transition_on_connect(session_factory):
+    """PR #7 review concern #2: presence at connect is not a movement."""
+    _persist(session_factory, 1)
+    feed = _feed(session_factory, FakeClock(0))
+    assert _events(feed.tick(), "room_transition") == []
 
 
 # -- privacy invariant -------------------------------------------------------
