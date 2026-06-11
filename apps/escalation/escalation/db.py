@@ -48,6 +48,13 @@ class Incident(Base):
     room: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
 
+    # The ingest fall-machine incident id this cascade was raised for, when the
+    # hand-off carried one. Lets the caregiver app (BAT-25) join the cascade
+    # timeline to the upstream NORMAL→…→CONFIRMED_FALL state-machine replay.
+    source_incident_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
+
     status: Mapped[str] = mapped_column(String, nullable=False, default=ACTIVE)
 
     # Persisted timer: the next ladder step and the epoch deadline it fires at.

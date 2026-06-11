@@ -1,15 +1,102 @@
-// Hearth caregiver dashboard (scaffold).
+// Hearth caregiver dashboard (BAT-25).
 //
-// Privacy is the brand: this app only ever shows coarse status and activity
-// blocks — never cameras, microphones, or per-second sensor data. The real
-// status views are built in a later issue; this is the placeholder shell.
+// The "Mom is okay" app for an adult child on her phone — warm, high-contrast,
+// large type, mobile-first. Privacy is the brand: coarse status and activity
+// blocks only, never cameras, microphones, or per-second sensor data.
+//
+// Five screens: Home (status card), Activity, Alerts (incident replay), Care
+// circle, Settings. The Home card polls the ingest /api/status and the
+// escalation /api/incidents/active every few seconds and composes them.
+
+import { useCallback, useEffect, useState } from "react";
+import { claimIncident, getActiveIncidents, getStatus } from "./api.js";
+import StatusCard from "./components/StatusCard.jsx";
+import ActivityScreen from "./components/ActivityScreen.jsx";
+import AlertsScreen from "./components/AlertsScreen.jsx";
+import CareCircle from "./components/CareCircle.jsx";
+import Settings from "./components/Settings.jsx";
+
+const POLL_MS = 4000;
+const HOME_ID = import.meta.env.VITE_HOME_ID || "home";
+
+const TABS = [
+  { key: "home", label: "Home" },
+  { key: "activity", label: "Activity" },
+  { key: "alerts", label: "Alerts" },
+  { key: "circle", label: "Care circle" },
+  { key: "settings", label: "Settings" },
+];
+
+function useStatusPolling() {
+  const [status, setStatus] = useState(null);
+  const [incidents, setIncidents] = useState([]);
+  const [error, setError] = useState(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [s, inc] = await Promise.all([getStatus(), getActiveIncidents()]);
+      setStatus(s);
+      setIncidents(inc.incidents || []);
+      setError(null);
+    } catch (e) {
+      setError(e.message || "offline");
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, POLL_MS);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return { status, incidents, error, refresh };
+}
 
 export default function App() {
+  const [tab, setTab] = useState("home");
+  const { status, incidents, error, refresh } = useStatusPolling();
+
+  const handleClaim = useCallback(
+    async (incidentId) => {
+      await claimIncident(incidentId, "You");
+      await refresh();
+    },
+    [refresh],
+  );
+
   return (
-    <main>
-      <h1>Hearth</h1>
-      <p>Caregiver status dashboard — scaffold (BAT-20).</p>
-      <p>Coarse status only. No cameras, no microphones, no per-second data.</p>
-    </main>
+    <div className="app">
+      <header className="app__header">
+        <h1 className="app__brand">Hearth</h1>
+        {status?.home_id && <p className="app__home">{status.home_id}</p>}
+      </header>
+
+      <main className="app__main">
+        {error && tab === "home" && (
+          <p className="banner" role="status">Reconnecting to the home… ({error})</p>
+        )}
+        {tab === "home" && (
+          <StatusCard status={status} activeIncidents={incidents} onClaim={handleClaim} />
+        )}
+        {tab === "activity" && <ActivityScreen homeId={HOME_ID} />}
+        {tab === "alerts" && <AlertsScreen />}
+        {tab === "circle" && <CareCircle />}
+        {tab === "settings" && <Settings />}
+      </main>
+
+      <nav className="app__tabs" aria-label="Sections">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            className="app__tab"
+            aria-current={tab === t.key ? "page" : undefined}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+    </div>
   );
 }

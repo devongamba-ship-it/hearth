@@ -96,8 +96,14 @@ class CascadeEngine:
 
     # -- cascade entry -------------------------------------------------------
 
-    def escalate(self, room: str, home_name: str | None = None) -> str:
-        """Start a cascade for a CONFIRMED_FALL. Runs the T+0 alert step now."""
+    def escalate(self, room: str, home_name: str | None = None,
+                 source_incident_id: str | None = None) -> str:
+        """Start a cascade for a CONFIRMED_FALL. Runs the T+0 alert step now.
+
+        ``source_incident_id`` is the upstream ingest fall-machine incident id,
+        when the hand-off carried one; it is stored so the caregiver app can
+        join the cascade to the state-machine replay.
+        """
         now = self.now()
         incident_id = uuid.uuid4().hex
         home = home_name or self._config.home_name
@@ -107,6 +113,7 @@ class CascadeEngine:
                 home_name=home,
                 room=room,
                 created_at=now,
+                source_incident_id=source_incident_id,
                 status=db.ACTIVE,
                 next_action=db.STEP_VOICE,
                 next_action_at=now + VOICE_DELAY,
@@ -281,3 +288,43 @@ class CascadeEngine:
             for row in rows:
                 session.expunge(row)
             return list(rows)
+
+    # -- caregiver read API (BAT-25) ----------------------------------------
+
+    def incidents(self, *, active_only: bool = False) -> list[db.Incident]:
+        """All incidents (or only the unresolved ones), newest first.
+
+        Detached copies — the caregiver app only ever reads alert events, never
+        the live ORM session (CLAIMED/ACTIVE/RESOLVED summaries leave the home,
+        nothing else).
+        """
+        from sqlalchemy import select
+
+        stmt = select(db.Incident).order_by(db.Incident.created_at.desc())
+        if active_only:
+            stmt = stmt.where(db.Incident.status != db.RESOLVED)
+        with self._sessions() as session:
+            rows = session.scalars(stmt).all()
+            for row in rows:
+                session.expunge(row)
+            return list(rows)
+
+    def claim_idempotent(self, incident_id: str, by: str,
+                         now: float | None = None) -> tuple[db.Incident, bool]:
+        """Claim an incident, idempotently.
+
+        Returns ``(incident, claimed_now)``. A first claim runs the full
+        :meth:`claim` (pauses the cascade, broadcasts "claimed by …"). A repeat
+        call on an already-claimed incident is a no-op that returns the current
+        state with ``claimed_now=False`` — so a double-tap or a retried POST
+        never re-broadcasts or re-starts the confirm window. Raises
+        :class:`CascadeError` for an unknown or already-resolved incident.
+        """
+        incident = self.get(incident_id)
+        if incident is None:
+            raise CascadeError(f"unknown incident {incident_id}")
+        if incident.status == db.RESOLVED:
+            raise CascadeError("incident already resolved")
+        if incident.status == db.CLAIMED:
+            return incident, False
+        return self.claim(incident_id, by=by, now=now), True
