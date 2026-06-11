@@ -9,9 +9,12 @@ readings — CLAUDE.md: privacy is the brand):
   GET /api/status                     — the "Mom is okay" Home status card
   GET /api/fall-incidents             — confirmed-fall incidents (alert history)
   GET /api/fall-incidents/{id}        — one incident's state-machine replay
-  GET /homes/{home_id}/layout         — room layout (rooms real, geometry stub)
+  GET /homes/{home_id}/layout         — floor-plan layout (BAT-27 when authored)
   GET /homes/{home_id}/trends         — pre-aggregated weekly trend cards (stub)
   GET /api/activity                   — today's coarse activity blocks (stub)
+
+BAT-27 live mesh view:
+  WS  /homes/{home_id}/live           — 1 Hz aggregated room/track/event feed
 
 These are the ingest service's own local API. "Latest" is by insert order
 (surrogate id), not the packet timestamp, because ms-since-boot resets on a node
@@ -20,14 +23,17 @@ reboot.
 
 from __future__ import annotations
 
+import asyncio
 import time
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
 
 from . import __version__, caregiver
 from .db import CONFIRMED_FALL, FallTransition, Reading, init_db, make_engine, make_session_factory
 from .detection import load_config
+from .layout import HomeLayout, load_layout
+from .live import LiveFeed
 
 app = FastAPI(title="Hearth Ingest", version=__version__)
 
@@ -248,10 +254,30 @@ def fall_incident_detail(incident_id: str, request: Request) -> dict:
     }
 
 
+def _layout(request: Request) -> HomeLayout | None:
+    """The configured home layout: an ``app.state.layout`` override (tests set
+    this) or one loaded from ``$HEARTH_LAYOUT_FILE``. ``None`` when neither is
+    set — the layout endpoint then serves its derived-from-config fallback and
+    the live feed synthesises a layout from the detection config."""
+    override = getattr(request.app.state, "layout", None)
+    return override if override is not None else load_layout()
+
+
 @app.get("/homes/{home_id}/layout")
 def home_layout(home_id: str, request: Request) -> dict:
-    """Room layout for the activity view. Rooms are real (from detection config /
-    seen node ids); per-room geometry is stubbed until a floor-plan store exists."""
+    """Floor-plan layout for the live mesh view (BAT-27): rooms, node markers,
+    link topology, hand-authored at onboarding (``layout.yaml``).
+
+    When a layout is configured it is served as-is (topology only, never raw
+    readings). With no authored layout, falls back to the BAT-25 derived stub:
+    rooms inferred from the detection config and seen node ids, geometry stubbed.
+    """
+    layout = _layout(request)
+    if layout is not None:
+        body = layout.to_json()
+        body["home_id"] = home_id
+        return body
+
     factory = _session_factory(request)
     config = _config(request)
     with factory() as session:
@@ -263,6 +289,47 @@ def home_layout(home_id: str, request: Request) -> dict:
         for nid in seen
     ]
     return {"home_id": home_id, "rooms": rooms, "geometry_stub": True}
+
+
+# -- BAT-27 live mesh view feed ---------------------------------------------
+
+
+def _build_live_feed(websocket: WebSocket, home_id: str) -> LiveFeed:
+    """Assemble the per-connection :class:`LiveFeed`.
+
+    Layout precedence mirrors :func:`_layout`: an ``app.state.layout`` override,
+    then ``$HEARTH_LAYOUT_FILE``, then a layout synthesised from the detection
+    config plus seen node ids so the feed still maps nodes to rooms with no
+    authored floor plan. The clock is shared with the rest of the app (tests
+    drive ``app.state.clock`` to exercise dropout/dwell timing deterministically).
+    """
+    factory = _session_factory(websocket)
+    config = _config(websocket)
+    override = getattr(websocket.app.state, "layout", None)
+    layout = override if override is not None else load_layout()
+    if layout is None:
+        with factory() as session:
+            node_ids = session.scalars(select(Reading.node_id).distinct()).all()
+        layout = HomeLayout.from_detection(config, node_ids, home_id=home_id)
+    clock = getattr(websocket.app.state, "clock", None)
+    return LiveFeed(factory, layout, home_id=home_id, clock=clock)
+
+
+@app.websocket("/homes/{home_id}/live")
+async def home_live(websocket: WebSocket, home_id: str) -> None:
+    """1 Hz aggregated live feed for the mesh view (room activity, anonymous
+    tracks, event ticker, incident transitions). Aggregated frames only — raw
+    CSI/readings never leave the home (CLAUDE.md: privacy is the brand)."""
+    await websocket.accept()
+    feed = _build_live_feed(websocket, home_id)
+    interval = getattr(websocket.app.state, "live_interval", 1.0)
+    try:
+        while True:
+            for message in feed.tick():
+                await websocket.send_json(message)
+            await asyncio.sleep(interval)
+    except WebSocketDisconnect:
+        return
 
 
 @app.get("/homes/{home_id}/trends")

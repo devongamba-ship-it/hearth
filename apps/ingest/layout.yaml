@@ -1,0 +1,59 @@
+# Hearth home layout (BAT-27) — the floor plan behind the live mesh view.
+#
+# Hand-authored at onboarding (v1). Point the ingest service at this file with
+# HEARTH_LAYOUT_FILE=/path/to/layout.yaml; GET /homes/<id>/layout serves it and
+# the WS /homes/<id>/live feed uses it to map nodes -> rooms.
+#
+# This is the demo home ("Rosewood") used by the caregiver-app mock data. It is
+# topology only — never raw readings. Geometry (x, y) is a unit-square schematic
+# the client draws node markers on; it is NOT a measured floor plan.
+
+home_id: rosewood
+name: Rosewood
+
+# Rooms drawn on the schematic. `bedroom` marks rooms eligible for the in-bed
+# sleep-window fall suppression (mirrors detection.yaml bedroom_nodes).
+rooms:
+  - id: kitchen
+    name: Kitchen
+  - id: living
+    name: Living room
+  - id: bedroom
+    name: Bedroom
+    bedroom: true
+  - id: bathroom
+    name: Bathroom
+
+# RuView nodes and the room each one covers. x/y are 0..1 schematic positions.
+nodes:
+  - id: 1
+    room: kitchen
+    x: 0.25
+    y: 0.25
+  - id: 2
+    room: bedroom
+    x: 0.75
+    y: 0.25
+  - id: 3
+    room: bathroom
+    x: 0.75
+    y: 0.75
+  - id: 4
+    room: living
+    x: 0.25
+    y: 0.75
+
+# Mesh link topology: pairs of node ids that hear each other (drawn as edges).
+links:
+  - [1, 4]
+  - [4, 3]
+  - [3, 2]
+  - [1, 2]
+
+# Resident track config. v1 tracking emits a single known track ("A") whose
+# identity confidence is read from here (real per-target heuristics come later;
+# the WS contract is already array-shaped so multi-track lands without a client
+# change). Extra detected targets are emitted as anonymous "guest-N" tracks.
+resident:
+  track_label: A
+  identity_confidence: 0.9
