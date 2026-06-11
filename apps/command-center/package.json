@@ -1,0 +1,26 @@
+{
+  "name": "hearth-command-center",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Hearth Command Center (BAT-29) — real-time 3D spatial view of the home. Demo/admin surface, not a caregiver surface.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.160.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@vitejs/plugin-react": "^4.3.1",
+    "jsdom": "^25.0.1",
+    "vite": "^5.4.0",
+    "vitest": "^2.1.9"
+  }
+}
