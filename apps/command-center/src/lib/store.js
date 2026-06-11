@@ -1,0 +1,200 @@
+// Pure scene store / reducer (BAT-29).
+//
+// Folds the live WS messages (room_activity / event / incident, per BAT-27 v0.2)
+// into a render-ready scene state. Pure and synchronous: the WS driver calls
+// `applyMessage(state, msg, scene)` for each message and feeds the result to the
+// renderer. Keeping it pure makes the whole frame→scene path unit-testable with
+// no socket, no clock, and no Three.js.
+//
+// State shape:
+//   {
+//     homeId,
+//     rooms: [{ room, activity_index, occupancy_count, tint }],
+//     figures: [...tracksToFigures output],
+//     tracking_degraded: bool,
+//     occupancyBadges: [{ room, count }],   // shown when degraded (no tracks)
+//     fallWatch: bool,                       // any track / incident in fall watch
+//     incident: { incident_id, room, state } | null,
+//     events: [...recent ticker items, newest first],
+//     hud: { ... },
+//     lastTs: number | null,
+//   }
+
+import { tracksToFigures } from "./figures.js";
+import { tintFor } from "./heat.js";
+
+export const MAX_EVENTS = 12; // ticker keeps this many, newest first
+
+// Fall-machine states that mean "this person is under fall watch" (mirrors the
+// backend _WATCH_STATES; the feed already tags tracks, this is for `incident`).
+const WATCH_STATES = new Set([
+  "SUSPECTED",
+  "PROBABLE",
+  "CHECK_IN_ACTIVE",
+  "CONFIRMED_FALL",
+]);
+
+export function initialState(scene) {
+  return {
+    homeId: scene?.homeId ?? "home",
+    rooms: [],
+    figures: [],
+    tracking_degraded: false,
+    occupancyBadges: [],
+    fallWatch: false,
+    incident: null,
+    events: [],
+    hud: emptyHud(),
+    lastTs: null,
+  };
+}
+
+function emptyHud() {
+  return {
+    rooms: [],
+    resident: null,
+    // Respiration and posture are NOT exposed by the aggregated feed (privacy
+    // brand: no per-second vitals leave the home). Surfaced as unavailable
+    // rather than fabricated. Motion is the activity index the feed does emit.
+    respiration: null,
+    posture: null,
+    motionEnergy: null,
+    confidence: null,
+    fallWatch: false,
+  };
+}
+
+function roomNameLookup(scene) {
+  const names = new Map((scene?.rooms ?? []).map((r) => [r.id, r.name]));
+  return (id) => names.get(id) ?? id;
+}
+
+function buildHud(rooms, figures, scene, fallWatch) {
+  const nameOf = roomNameLookup(scene);
+  // The resident track is the non-guest figure with the highest identity
+  // confidence (v1: the single known track "A").
+  const resident = figures
+    .filter((f) => !f.guest)
+    .sort((a, b) => b.identityConfidence - a.identityConfidence)[0];
+  const residentRoom = resident
+    ? rooms.find((r) => r.room === resident.room)
+    : null;
+  return {
+    rooms: rooms.map((r) => ({
+      room: r.room,
+      name: nameOf(r.room),
+      activity_index: r.activity_index,
+      occupancy_count: r.occupancy_count,
+    })),
+    resident: resident
+      ? {
+          label: resident.label,
+          room: resident.room,
+          roomName: nameOf(resident.room),
+          confidence: resident.confidence,
+          identityConfidence: resident.identityConfidence,
+          state: resident.state,
+        }
+      : null,
+    respiration: null,
+    posture: null,
+    // Motion energy proxy: the resident's room activity index (the motion-derived
+    // metric the feed actually provides). Null when the resident isn't located.
+    motionEnergy: residentRoom ? residentRoom.activity_index : null,
+    confidence: resident ? resident.confidence : null,
+    fallWatch,
+  };
+}
+
+function applyRoomActivity(state, msg, scene) {
+  const rooms = (msg.rooms ?? []).map((r) => ({
+    room: r.room,
+    activity_index: r.activity_index ?? 0,
+    occupancy_count: r.occupancy_count ?? 0,
+    tint: tintFor(r.activity_index ?? 0),
+  }));
+  const degraded = !!msg.tracking_degraded;
+  const figures = degraded ? [] : tracksToFigures(msg.tracks ?? [], scene);
+  // When tracking is degraded there are no positional tracks — clients degrade
+  // to per-room count badges (canonical update §4).
+  const occupancyBadges = degraded
+    ? rooms.filter((r) => r.occupancy_count > 0).map((r) => ({
+        room: r.room,
+        count: r.occupancy_count,
+      }))
+    : [];
+  // Fall watch from the track states (the incident stream also sets it).
+  const trackFallWatch = figures.some((f) => f.fallen);
+  const fallWatch = trackFallWatch || isIncidentWatching(state.incident);
+  return {
+    ...state,
+    rooms,
+    figures,
+    tracking_degraded: degraded,
+    occupancyBadges,
+    fallWatch,
+    hud: buildHud(rooms, figures, scene, fallWatch),
+    lastTs: msg.ts ?? state.lastTs,
+  };
+}
+
+function isIncidentWatching(incident) {
+  return !!incident && WATCH_STATES.has(incident.state);
+}
+
+function pushEvent(events, item) {
+  return [item, ...events].slice(0, MAX_EVENTS);
+}
+
+function applyEvent(state, msg) {
+  const item = {
+    kind: msg.event, // room_transition | dwell_start | sensing_dropout
+    room: msg.room ?? null,
+    fromRoom: msg.from_room ?? null,
+    trackId: msg.track_id ?? null,
+    nodeId: msg.node_id ?? null,
+    ts: msg.ts ?? state.lastTs,
+    detail: msg,
+  };
+  return { ...state, events: pushEvent(state.events, item) };
+}
+
+function applyIncident(state, msg, scene) {
+  const watching = WATCH_STATES.has(msg.to_state);
+  const incident = watching
+    ? { incident_id: msg.incident_id, room: msg.room, state: msg.to_state }
+    : null;
+  const item = {
+    kind: "incident",
+    room: msg.room ?? null,
+    nodeId: msg.node_id ?? null,
+    fromState: msg.from_state,
+    toState: msg.to_state,
+    incidentKind: msg.kind,
+    ts: msg.ts ?? state.lastTs,
+    detail: msg,
+  };
+  const fallWatch = watching || state.figures.some((f) => f.fallen);
+  return {
+    ...state,
+    incident,
+    fallWatch,
+    hud: { ...state.hud, fallWatch },
+    events: pushEvent(state.events, item),
+  };
+}
+
+/** Fold one WS message into scene state. Unknown types pass through unchanged. */
+export function applyMessage(state, msg, scene) {
+  if (!msg || typeof msg !== "object") return state;
+  switch (msg.type) {
+    case "room_activity":
+      return applyRoomActivity(state, msg, scene);
+    case "event":
+      return applyEvent(state, msg);
+    case "incident":
+      return applyIncident(state, msg, scene);
+    default:
+      return state;
+  }
+}
