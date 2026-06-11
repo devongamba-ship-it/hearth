@@ -1,0 +1,47 @@
+# Hearth fall-confirmation tunables (BAT-22).
+#
+# These WILL be tuned per home. Point the ingest fall machine at this file with
+# HEARTH_DETECTION_FILE=/path/to/detection.yaml. Every value here is the
+# built-in default — delete a key to keep the default; this file is shipped as
+# a documented starting point. Seconds unless noted.
+
+# Motion energy (the analog `motion` field on a reading) below this is
+# "stillness"; at/above it is "normal motion".
+stillness_threshold: 200.0
+
+# SUSPECTED is abandoned back to NORMAL if nothing resolves within this window.
+suspected_window_secs: 30
+# Cumulative seconds of stillness within SUSPECTED that advance to PROBABLE.
+confirm_stillness_secs: 20
+# Consecutive seconds of normal motion that mean the person got up (→ NORMAL,
+# logged as a near_fall).
+recovery_motion_secs: 10
+# How long an issued check-in may go unanswered before CONFIRMED_FALL. The v1
+# check-in is a stub that never answers, so this is the time from PROBABLE to
+# escalation.
+checkin_timeout_secs: 45
+# At most one CONFIRMED_FALL escalation per node within this window.
+dedupe_window_secs: 300
+
+# Forwarded to the escalation service on /escalate.
+home_name: null
+
+# node_id -> the room name a caregiver sees. Unmapped nodes escalate as
+# "node-<id>".
+rooms: {}
+#   1: "Living room"
+#   2: "Bedroom"
+
+# Nodes that cover a bed — eligible for in-bed sleep-window suppression.
+bedroom_nodes: []
+#   - 2
+
+# Night sensitivity boost. Inside the window the stillness threshold is lowered
+# (a fainter struggle still reads as movement, so a real fall confirms sooner);
+# in-bed stillness on a bedroom node is suppressed instead of alerted.
+quiet_hours:
+  enabled: false
+  start_hour: 22          # 24h clock; may wrap past midnight (e.g. 22 -> 7)
+  end_hour: 7
+  stillness_threshold: 120.0
+  in_bed_suppression: true
