@@ -1,0 +1,126 @@
+# Per-home incident registry + escalation policies (BAT-31).
+#
+# Every incident TYPE is defined independently here — its trigger is owned by the
+# emitter (the fall machine / wellness rules engine); this file owns the RESPONSE:
+# priority, escalation path, claim semantics, auto-resolve, quiet-hours, dedupe.
+# Adding or tuning an incident type is a YAML edit — never a code change.
+#
+# Copy to escalation_policies.yaml (gitignored) and point HEARTH_POLICIES_FILE at
+# it. With no file set, the service uses the embedded copy of this same registry.
+#
+# Schema
+#   version:      registry schema version (currently 1).
+#   quiet_hours:  the home's quiet window (local HH:MM, wraps midnight). Policies
+#                 with quiet_hours: defer hold delayed paging steps until it ends.
+#   policies[]:
+#     type:        registry key (e.g. fall.confirmed, wellness.late_start).
+#     priority:    P1..P4 (drives quiet-hours page/defer when a step omits one).
+#     claim:       mode = pause | close | none.
+#                  pause -> claiming pauses the ladder; resume if unconfirmed
+#                           within confirm_window_secs. close -> claiming
+#                           acknowledges and stops it (no resume). none -> not
+#                           claimable (informational / digest-only).
+#     snoozeable:  may a caregiver snooze it for the day? (fall is never snoozed.)
+#     auto_resolve: does it close itself (-> AUTO_RESOLVED) when its trigger
+#                   condition clears? (motion resumes, node recovers, …)
+#     quiet_hours: page | defer.
+#     dedupe:      one_open: true  -> one open instance per key while open.
+#                  window_secs: N  -> collapse repeats within N seconds.
+#     steps[]:     at_secs (offset from creation), action (pluggable sender:
+#                  broadcast | push | sms | voice | operator | ops_queue | digest),
+#                  optional priority override.
+
+version: 1
+
+quiet_hours:
+  start: "21:00"
+  end: "08:00"
+
+policies:
+  # P1 — the fall cascade, now a policy instance (was BAT-23's bespoke code).
+  - type: fall.confirmed
+    priority: P1
+    claim: { mode: pause, confirm_window_secs: 900 }   # 15-min confirm window
+    snoozeable: false
+    auto_resolve: false
+    quiet_hours: page                                  # P1 always pages
+    dedupe: { window_secs: 300 }                       # 5 min / home
+    steps:
+      - { at_secs: 0,   action: broadcast }            # push + SMS to whole circle
+      - { at_secs: 60,  action: voice }                # voice ladder, priority order
+      - { at_secs: 120, action: operator }             # operator/monitoring (stub)
+
+  - type: wellness.prolonged_stillness
+    priority: P2
+    claim: { mode: close }
+    snoozeable: true
+    auto_resolve: true                                 # motion resumes
+    quiet_hours: defer
+    dedupe: { one_open: true }
+    steps:
+      - { at_secs: 0,    action: push }
+      - { at_secs: 1800, action: sms }                 # T+30m
+      - { at_secs: 7200, action: ops_queue }           # T+2h courtesy
+
+  - type: system.sensing_gap
+    priority: P2
+    claim: { mode: close }
+    snoozeable: true
+    auto_resolve: true                                 # node recovers
+    quiet_hours: defer
+    dedupe: { one_open: true }
+    steps:
+      - { at_secs: 0,     action: push }
+      - { at_secs: 0,     action: ops_queue }
+      - { at_secs: 86400, action: ops_queue }          # T+24h escalate
+
+  - type: wellness.late_start
+    priority: P3
+    claim: { mode: close }
+    snoozeable: true
+    auto_resolve: true                                 # first motion
+    quiet_hours: defer
+    dedupe: { one_open: true }
+    steps:
+      - { at_secs: 0,     action: push }
+      - { at_secs: 14400, action: digest }             # T+4h digest + courtesy
+
+  - type: wellness.missed_meal
+    priority: P3
+    claim: { mode: close }
+    snoozeable: true
+    auto_resolve: true                                 # kitchen dwell
+    quiet_hours: defer
+    dedupe: { one_open: true }
+    steps:
+      - { at_secs: 0, action: push }
+
+  - type: wellness.bathroom_spike
+    priority: P4
+    claim: { mode: none }
+    snoozeable: true
+    auto_resolve: false
+    quiet_hours: defer
+    dedupe: { one_open: true }
+    steps:
+      - { at_secs: 0, action: digest }                 # digest only — never pages
+
+  - type: wellness.night_wandering
+    priority: P4
+    claim: { mode: none }
+    snoozeable: true
+    auto_resolve: false
+    quiet_hours: defer
+    dedupe: { one_open: true }
+    steps:
+      - { at_secs: 0, action: digest }
+
+  - type: wellness.activity_decline
+    priority: P4
+    claim: { mode: none }
+    snoozeable: true
+    auto_resolve: false
+    quiet_hours: defer
+    dedupe: { one_open: true }
+    steps:
+      - { at_secs: 0, action: digest }                 # weekly report

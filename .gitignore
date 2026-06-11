@@ -5,6 +5,8 @@ venv/
 *.sqlite
 *.db
 .env
+# Per-home escalation config (copied from escalation_policies.example.yaml).
+escalation_policies.yaml
 node_modules/
 dist/
 .pytest_cache/

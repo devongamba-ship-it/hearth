@@ -22,12 +22,19 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 DEFAULT_DB_URL = "sqlite:///escalation.db"
 
-# Incident status values.
+# Incident status values. ``ACTIVE`` is the lifecycle's OPEN state — kept under
+# its original name so the caregiver app's live contract (status == "active")
+# does not change. ``AUTO_RESOLVED`` is the terminal state for auto-resolving
+# types whose trigger condition cleared (BAT-31).
 ACTIVE = "active"
 CLAIMED = "claimed"
 RESOLVED = "resolved"
+AUTO_RESOLVED = "auto_resolved"
 
-# Next-action steps in the cascade ladder.
+# Terminal (closed) states — never paged again, excluded from ``state=open``.
+TERMINAL = (RESOLVED, AUTO_RESOLVED)
+
+# Cascade ladder step action names (back-compat aliases for the fall policy).
 STEP_VOICE = "voice"
 STEP_OPERATOR = "operator"
 
@@ -48,6 +55,13 @@ class Incident(Base):
     room: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
 
+    # Incident type (registry key) + its priority, and the dedupe key used to
+    # collapse repeat raises. ``type`` defaults to the fall cascade so rows
+    # written by the legacy ``/escalate`` path remain well-typed.
+    type: Mapped[str] = mapped_column(String, nullable=False, default="fall.confirmed")
+    priority: Mapped[str | None] = mapped_column(String, nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
     # The ingest fall-machine incident id this cascade was raised for, when the
     # hand-off carried one. Lets the caregiver app (BAT-25) join the cascade
     # timeline to the upstream NORMAL→…→CONFIRMED_FALL state-machine replay.
@@ -57,16 +71,25 @@ class Incident(Base):
 
     status: Mapped[str] = mapped_column(String, nullable=False, default=ACTIVE)
 
-    # Persisted timer: the next ladder step and the epoch deadline it fires at.
-    # Both NULL means the cascade is paused (claimed) or terminal.
+    # Persisted timer: the next ladder step (by index into the policy's steps,
+    # with ``next_action`` carrying its action name for display/back-compat) and
+    # the epoch deadline it fires at. Both NULL means the ladder is paused
+    # (claimed), snoozed, or exhausted.
     next_action: Mapped[str | None] = mapped_column(String, nullable=True)
     next_action_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    next_step_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Claim state. A claim pauses (does not cancel) the cascade; claim_deadline
-    # is when an unconfirmed claim expires and the cascade resumes at operator.
+    # Claim state. A pause-mode claim pauses (does not cancel) the ladder;
+    # claim_deadline is when an unconfirmed claim expires and the ladder resumes
+    # at the step that was pending (recorded in ``paused_step_index``).
     claimed_by: Mapped[str | None] = mapped_column(String, nullable=True)
     claimed_at: Mapped[float | None] = mapped_column(Float, nullable=True)
     claim_deadline: Mapped[float | None] = mapped_column(Float, nullable=True)
+    paused_step_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Snooze-for-today: while set (epoch), the ladder is suppressed; the incident
+    # stays open but does not page again until the snooze passes.
+    snoozed_until: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Final disposition (immutable once set) + required reason code.
     disposition: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -87,6 +110,11 @@ class CascadeEvent(Base):
     kind: Mapped[str] = mapped_column(String, nullable=False)
     priority: Mapped[str | None] = mapped_column(String, nullable=True)
     detail: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # Every transition records who acted and on what channel (BAT-31): a
+    # caregiver name, "system", or a channel like sms/voice/digest. Nullable so
+    # pre-existing rows and purely-internal events need not carry both.
+    actor: Mapped[str | None] = mapped_column(String, nullable=True)
+    channel: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 def make_engine(url: str | None = None):

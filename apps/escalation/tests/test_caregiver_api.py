@@ -28,8 +28,10 @@ def client(monkeypatch, db_url, config):
 
 
 def test_active_and_history_listing(client):
-    a = client.engine.escalate(room="kitchen")
-    b = client.engine.escalate(room="bathroom")
+    # Distinct homes so the new fall.confirmed 5-min/home dedupe (BAT-31) keeps
+    # these as two separate incidents rather than collapsing them.
+    a = client.engine.escalate(room="kitchen", home_name="HomeA")
+    b = client.engine.escalate(room="bathroom", home_name="HomeB")
     client.engine.resolve(b, disposition="recovered", reason_code="ok")
 
     active = client.get("/api/incidents/active").json()["incidents"]

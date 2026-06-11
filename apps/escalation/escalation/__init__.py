@@ -17,14 +17,19 @@ __all__ = [
     "is_dry_run",
     "notify",
     "CascadeEngine",
+    "PolicyEngine",
     "CascadeError",
     "DISPOSITIONS",
     "load_config",
     "load_config_from_text",
+    "load_registry",
+    "load_registry_from_text",
+    "default_registry",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .cascade import DRY_RUN, LIVE, is_dry_run, mode, notify
 from .config import load_config, load_config_from_text
-from .engine import DISPOSITIONS, CascadeEngine, CascadeError
+from .engine import DISPOSITIONS, CascadeEngine, CascadeError, PolicyEngine
+from .policy import default_registry, load_registry, load_registry_from_text
