@@ -8,8 +8,10 @@ says; adding an incident type is a YAML edit, never a code change (canonical:
 platform design v0.1 §4.5).
 
 This module owns the **schema** and the **v1 registry**. The fall cascade that
-BAT-23 hand-coded is here re-expressed as the ``fall.confirmed`` policy instance:
-T+0 broadcast, T+60 voice ladder, T+120 operator — the same ladder, now data.
+BAT-23 hand-coded is here re-expressed as the ``fall.confirmed`` policy instance
+per the BAT-31 registry table: T+0 push circle + ops queue, T+1:00 SMS + voice
+ladder, T+2:00 operator. An unconfirmed claim resumes AT the operator step
+(platform design v0.1 §4 step 3), expressed as ``resume_at_action``.
 
 Loading order (``load_registry``):
 
@@ -84,6 +86,10 @@ class Policy:
     #   dedupe_window_secs>0 -> dedupe repeats within that many seconds.
     one_open: bool = False
     dedupe_window_secs: float = 0.0
+    # Where an expired (unconfirmed) pause-claim resumes. None = the step that
+    # was pending when claimed; an action name = the first step with that
+    # action (fall.confirmed resumes at "operator" per design §4 step 3).
+    resume_at_action: str | None = None
 
     @property
     def claimable(self) -> bool:
@@ -143,12 +149,17 @@ DEFAULT_REGISTRY: dict = {
             "type": "fall.confirmed",
             "priority": "P1",
             "claim": {"mode": "pause", "confirm_window_secs": 900},
+            "resume_at_action": "operator",
             "snoozeable": False,
             "auto_resolve": False,
             "quiet_hours": "page",
             "dedupe": {"window_secs": 300},
+            # BAT-31 registry table: T+0 push circle + ops queue, T+1:00
+            # SMS + voice priority ladder, T+2:00 operator (SLA 60s).
             "steps": [
-                {"at_secs": 0, "action": "broadcast"},
+                {"at_secs": 0, "action": "push"},
+                {"at_secs": 0, "action": "ops_queue"},
+                {"at_secs": 60, "action": "sms"},
                 {"at_secs": 60, "action": "voice"},
                 {"at_secs": 120, "action": "operator"},
             ],
@@ -286,6 +297,14 @@ def _parse_policy(raw: dict) -> Policy:
             f"expected one of {QUIET_MODES}"
         )
     dedupe = raw.get("dedupe") or {}
+    resume_at = raw.get("resume_at_action")
+    if resume_at is not None:
+        resume_at = str(resume_at)
+        if resume_at not in {s.action for s in steps}:
+            raise PolicyError(
+                f"policy {raw['type']!r}: resume_at_action {resume_at!r} "
+                "names no step in this policy"
+            )
     return Policy(
         type=str(raw["type"]),
         priority=str(raw.get("priority", "P3")),
@@ -297,6 +316,7 @@ def _parse_policy(raw: dict) -> Policy:
         quiet_hours=quiet,
         one_open=bool(dedupe.get("one_open", False)),
         dedupe_window_secs=float(dedupe.get("window_secs", 0.0)),
+        resume_at_action=resume_at,
     )
 
 

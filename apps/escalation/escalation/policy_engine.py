@@ -21,6 +21,7 @@ now simply the ``fall.confirmed`` policy instance.
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -80,6 +81,12 @@ class PolicyEngine:
         self._notifier = notifier or DryRunNotifier()
         self._clock = clock or time.time
         self._registry = registry or default_registry()
+        # Serializes the dedupe check-then-insert in raise_incident. FastAPI
+        # sync endpoints run in a threadpool, so two simultaneous identical
+        # raises could otherwise both miss the dedupe check and double-open a
+        # P1. Process-level lock is sufficient for the v1 single-process
+        # deployment; a multi-process deployment needs a DB-level constraint.
+        self._raise_lock = threading.Lock()
 
     @property
     def notifier(self) -> Notifier:
@@ -150,7 +157,7 @@ class PolicyEngine:
         home = home_name or self._config.home_name
         key = dedupe_key or f"{type_}:{home}"
 
-        with self._sessions() as session:
+        with self._raise_lock, self._sessions() as session:
             existing = self._find_dedupe(session, policy, key, now)
             if existing is not None:
                 self._log(session, existing.id, "deduped",
@@ -268,6 +275,10 @@ class PolicyEngine:
                             (db.Incident.status == db.CLAIMED)
                             & (db.Incident.claim_deadline.is_not(None))
                             & (db.Incident.claim_deadline <= now),
+                            # Expired snoozes re-arm: "for today" ends today.
+                            (db.Incident.status == db.ACTIVE)
+                            & (db.Incident.snoozed_until.is_not(None))
+                            & (db.Incident.snoozed_until <= now),
                         )
                     )
                     .order_by(db.Incident.next_action_at)
@@ -277,6 +288,9 @@ class PolicyEngine:
                     break
                 if incident.status == db.CLAIMED:
                     self._resume_after_claim(session, incident, now)
+                elif (incident.snoozed_until is not None
+                        and incident.snoozed_until <= now):
+                    self._resume_after_snooze(session, incident, now)
                 else:
                     self._advance(session, incident, now)
                 fired += 1
@@ -341,14 +355,17 @@ class PolicyEngine:
                   priority=policy.step_priority(step), actor="system", channel="broadcast")
 
     def _send_sms(self, session, incident, policy, step, now) -> None:
-        body = self._concern_body(incident)
+        body = self._page_body(incident)
         for contact in self._config.contacts:
-            self._notifier.send(SMS, contact.sms, body)
+            # Respect per-contact channel preferences (a push-only contact
+            # must never get the SMS step) — same gate as push/broadcast.
+            if SMS in contact.channels:
+                self._notifier.send(SMS, contact.sms, body)
         self._log(session, incident.id, "sms_sent", "SMS to circle", at=now,
                   priority=policy.step_priority(step), actor="system", channel=SMS)
 
     def _send_push(self, session, incident, policy, step, now) -> None:
-        body = self._concern_body(incident)
+        body = self._page_body(incident)
         for contact in self._config.contacts:
             if PUSH in contact.channels:
                 self._notifier.send(PUSH, contact.sms, body)
@@ -389,6 +406,16 @@ class PolicyEngine:
     @staticmethod
     def _concern_body(incident: db.Incident) -> str:
         return f"Hearth: {incident.type} at {incident.home_name} ({incident.room})."
+
+    def _page_body(self, incident: db.Incident) -> str:
+        """Fall pages carry the ack instructions; wellness pages stay plain."""
+        if incident.type == "fall.confirmed":
+            return (
+                f"Possible fall detected in {incident.room} at "
+                f"{incident.home_name}. Reply OK to acknowledge, HELP to "
+                "escalate now."
+            )
+        return self._concern_body(incident)
 
     # -- claim / resume ------------------------------------------------------
 
@@ -449,8 +476,13 @@ class PolicyEngine:
             self._notifier.send(SMS, contact.sms, body)
 
     def _resume_after_claim(self, session, incident: db.Incident, now: float) -> None:
-        """An unconfirmed pause-claim expired — resume the ladder (to OPEN) at the
-        step that was pending when it was claimed."""
+        """An unconfirmed pause-claim expired — resume the ladder (to OPEN).
+
+        Resumes at ``policy.resume_at_action`` when set (design §4: an
+        unconfirmed fall claim resumes AT the operator step, wherever the
+        ladder stood when claimed); otherwise at the step that was pending
+        when it was claimed.
+        """
         policy = self.policy_for(incident.type)
         window_m = int(policy.confirm_window_secs // 60)
         self._log(session, incident.id, "claim_expired_resumed",
@@ -458,7 +490,13 @@ class PolicyEngine:
                   at=now, priority=policy.priority, actor="system")
         incident.status = db.ACTIVE
         incident.claim_deadline = None
-        incident.next_step_index = incident.paused_step_index
+        resume_idx = incident.paused_step_index
+        if policy.resume_at_action is not None:
+            resume_idx = next(
+                i for i, s in enumerate(policy.steps)
+                if s.action == policy.resume_at_action
+            )
+        incident.next_step_index = resume_idx
         incident.paused_step_index = None
         self._advance(session, incident, now)
 
@@ -480,6 +518,11 @@ class PolicyEngine:
             policy = self.policy_for(incident.type)
             if not policy.snoozeable:
                 raise CascadeError(f"incident type {incident.type!r} cannot be snoozed")
+            # Park the pending step so process_due can re-arm the ladder when
+            # the snooze passes — "for today" means today, not forever. Safe
+            # to share paused_step_index with claim: every snoozeable type is
+            # claim-mode "close", which never resumes.
+            incident.paused_step_index = incident.next_step_index
             incident.snoozed_until = self._end_of_day(now)
             incident.next_action = None
             incident.next_action_at = None
@@ -491,6 +534,24 @@ class PolicyEngine:
             session.refresh(incident)
             session.expunge(incident)
             return incident
+
+    def _resume_after_snooze(self, session, incident: db.Incident, now: float) -> None:
+        """A snooze window has passed — re-arm the parked ladder step.
+
+        Clears ``snoozed_until`` BEFORE advancing: if the resumed step then
+        defers for quiet hours, the incident must not re-match the snooze
+        clause and loop. Quiet-hours deferral composing on top is correct —
+        a snooze ending at 23:59 re-pages at the quiet window's end, not at
+        midnight.
+        """
+        policy = self.policy_for(incident.type)
+        self._log(session, incident.id, "snooze_expired_resumed",
+                  "snooze window passed; ladder re-armed",
+                  at=now, priority=policy.priority, actor="system")
+        incident.snoozed_until = None
+        incident.next_step_index = incident.paused_step_index
+        incident.paused_step_index = None
+        self._advance(session, incident, now)
 
     @staticmethod
     def _end_of_day(now: float) -> float:

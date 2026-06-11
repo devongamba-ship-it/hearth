@@ -78,6 +78,65 @@ def test_fall_is_not_snoozeable(engine):
         engine.snooze(incident_id)
 
 
+def test_early_claim_resumes_at_operator_not_pending_step(engine, clock):
+    # Design §4: an unconfirmed fall claim resumes AT the operator step —
+    # claiming early must not replay the sms/voice pages on expiry.
+    clock.set(0)
+    incident_id = engine.escalate(room="kitchen")
+    clock.set(10)                      # pending step is still sms@60
+    engine.claim(incident_id, by="Dana")
+    clock.set(10 + 15 * 60)
+    assert engine.process_due() == 1
+    kinds = _kinds(engine, incident_id)
+    assert "operator_escalation" in kinds
+    assert "sms_sent" not in kinds and "voice_calls" not in kinds
+
+
+def test_close_claim_stops_ladder_with_no_resume(engine, clock):
+    # claim-mode "close" acknowledges and ends the ladder — no confirm window,
+    # no resume, ever (PR #8 review concern #5a).
+    t0 = 1_000_000_000
+    clock.set(t0)
+    inc, _ = engine.raise_incident("wellness.prolonged_stillness", room="bedroom")
+    clock.set(t0 + 10)
+    engine.claim(inc.id, by="Dana")
+    assert engine.get(inc.id).status == db.CLAIMED
+
+    clock.set(t0 + 10 * 86400)         # far past every step + any window
+    assert engine.process_due() == 0
+    kinds = _kinds(engine, inc.id)
+    assert "sms_sent" not in kinds and "claim_expired_resumed" not in kinds
+    assert engine.get(inc.id).status == db.CLAIMED
+
+
+def test_snooze_resumes_next_day(engine, clock):
+    # "Snooze for today" means today: the parked step re-arms once the snooze
+    # passes (PR #8 review concern #1). t0 far from epoch: Windows cannot
+    # timestamp() pre-1970 local datetimes.
+    t0 = 1_000_000_000
+    clock.set(t0)
+    inc, _ = engine.raise_incident("wellness.prolonged_stillness", room="bedroom")
+    clock.set(t0 + 10)
+    engine.snooze(inc.id, by="Dana")
+    snooze_end = engine.get(inc.id).snoozed_until
+    assert snooze_end is not None
+
+    # Quiet while snoozed, even past the original sms deadline.
+    clock.set(t0 + 7200)
+    assert engine.process_due() == 0
+    assert "sms_sent" not in _kinds(engine, inc.id)
+
+    # After the snooze passes (next day, outside quiet hours) the ladder
+    # re-arms and the parked step pages.
+    clock.set(snooze_end + 13 * 3600)
+    assert engine.process_due() >= 1
+    kinds = _kinds(engine, inc.id)
+    assert "snooze_expired_resumed" in kinds and "sms_sent" in kinds
+    refreshed = engine.get(inc.id)
+    assert refreshed.snoozed_until is None
+    assert refreshed.status == db.ACTIVE
+
+
 # -- wellness.prolonged_stillness: auto-resolve on motion --------------------
 
 

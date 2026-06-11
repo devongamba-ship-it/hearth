@@ -49,8 +49,9 @@ def test_incident_detail_replays_cascade_timeline(client):
     assert body["id"] == incident_id
     assert body["status"] == db.ACTIVE
     kinds = [e["kind"] for e in body["cascade"]]
-    # The T+0 alert step is on the timeline with wall-clock timestamps.
-    assert "incident_created" in kinds and "alert_broadcast" in kinds
+    # The T+0 steps (push + ops queue) are on the timeline with timestamps.
+    assert "incident_created" in kinds and "push_sent" in kinds
+    assert "ops_queued" in kinds
     assert all("at" in e for e in body["cascade"])
 
 

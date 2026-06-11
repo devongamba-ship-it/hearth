@@ -36,7 +36,7 @@ def test_restart_resumes_all_open_incidents_at_correct_step(db_url, config):
         "system.sensing_gap", room="home")                    # next: ops_queue @86400
 
     # Sanity: each persisted its own next deadline before the "crash".
-    assert engine1.get(fall).next_action == "voice"
+    assert engine1.get(fall).next_action == "sms"
     assert engine1.get(still.id).next_action == "sms"
     assert engine1.get(gap.id).next_action == "ops_queue"
 
@@ -46,8 +46,8 @@ def test_restart_resumes_all_open_incidents_at_correct_step(db_url, config):
     clock2 = FakeClock(DAY + 2000)
     engine2 = make_engine(db_url, config, clock2, notifier=DryRunNotifier())
     fired = engine2.process_due()
-    # fall: voice@60 + operator@120 (cascade completes); stillness: sms@1800.
-    assert fired == 3
+    # fall: sms@60 + voice@60 + operator@120 (completes); stillness: sms@1800.
+    assert fired == 4
 
     assert "voice_calls" in _kinds(engine2, fall)
     assert "operator_escalation" in _kinds(engine2, fall)

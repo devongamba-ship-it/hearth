@@ -32,7 +32,9 @@ def test_full_fall_lifecycle_including_claim_resume_is_audited(engine, clock):
     # Full, ordered lifecycle — including the claim-resume leg.
     assert kinds == [
         "incident_created",
-        "alert_broadcast",
+        "push_sent",
+        "ops_queued",
+        "sms_sent",
         "voice_calls",
         "claimed",
         "claim_expired_resumed",

@@ -41,12 +41,15 @@ policies:
   - type: fall.confirmed
     priority: P1
     claim: { mode: pause, confirm_window_secs: 900 }   # 15-min confirm window
+    resume_at_action: operator                         # unconfirmed claim resumes AT operator (§4 step 3)
     snoozeable: false
     auto_resolve: false
     quiet_hours: page                                  # P1 always pages
     dedupe: { window_secs: 300 }                       # 5 min / home
-    steps:
-      - { at_secs: 0,   action: broadcast }            # push + SMS to whole circle
+    steps:                                             # BAT-31 registry table
+      - { at_secs: 0,   action: push }                 # push to circle
+      - { at_secs: 0,   action: ops_queue }            # ops queue notified at onset
+      - { at_secs: 60,  action: sms }                  # SMS to circle
       - { at_secs: 60,  action: voice }                # voice ladder, priority order
       - { at_secs: 120, action: operator }             # operator/monitoring (stub)
 
