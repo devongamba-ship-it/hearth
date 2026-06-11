@@ -29,9 +29,12 @@ below and the Linear issue specs are the authoritative extract.
 
 - **Local-first.** All sensing data stays on the home device. Only alert
   events and coarse status leave. Do not add cloud storage of raw readings.
-- **Privacy is the brand.** No cameras, no microphones (until the explicit
-  voice-check-in issue), no per-second data exposed to the caregiver app —
-  states and coarse activity blocks only.
+- **Privacy is the brand.** No cameras. No microphones **except** during an
+  active voice check-in window (BAT-30): the mic opens only while a check-in is
+  live, is hard-released the instant it resolves or the window elapses, every
+  open/close is audit-logged, recognition is yes/no-class only, and no audio is
+  recorded, persisted, or sent off-device. No per-second data exposed to the
+  caregiver app — states and coarse activity blocks only.
 - **SQLite + Python (FastAPI) services, React+Vite frontend.** Don't introduce
   new databases, queues, or frameworks without an issue that says to.
 - **Shared packet codec** lives in one module (`hearth/packet.py`); the
