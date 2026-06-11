@@ -326,7 +326,17 @@ function buildFigure(f, style) {
   return g;
 }
 
-function makeTagSprite(text, color, y) {
+// Tag sprite materials are cached per (label, color): drawFigures rebuilds
+// figures every animation frame, and uploading a fresh CanvasTexture to the
+// GPU 60 times a second per figure leaks GPU memory unbounded on a
+// continuously-running wall display (PR #11 review concern #1). Cached
+// materials are marked so clear() never disposes them.
+const tagMaterialCache = new Map();
+
+function tagMaterial(text, color) {
+  const key = `${text}|${color}`;
+  let mat = tagMaterialCache.get(key);
+  if (mat) return mat;
   const canvas = document.createElement("canvas");
   canvas.width = 128;
   canvas.height = 64;
@@ -341,10 +351,17 @@ function makeTagSprite(text, color, y) {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(String(text), 64, 34);
-  const texture = new THREE.CanvasTexture(canvas);
-  const sprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({ map: texture, transparent: true }),
-  );
+  mat = new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(canvas),
+    transparent: true,
+  });
+  mat.userData.cached = true;
+  tagMaterialCache.set(key, mat);
+  return mat;
+}
+
+function makeTagSprite(text, color, y) {
+  const sprite = new THREE.Sprite(tagMaterial(text, color));
   sprite.position.set(0, y, 0);
   sprite.scale.set(0.8, 0.4, 1);
   return sprite;
@@ -375,10 +392,19 @@ function sampleCurrent(prev, target, alpha) {
 }
 
 function clear(group) {
-  while (group.children.length) {
-    const c = group.children.pop();
+  // Figures are nested Groups (body group -> meshes, halo, tag sprite), so a
+  // top-level pop leaks every nested geometry/material/texture — dispose
+  // recursively (PR #11 review concern #1). Cached materials (shared tag
+  // sprites) are skipped; their textures live for the session by design.
+  group.traverse((c) => {
+    if (c === group) return;
     c.geometry?.dispose?.();
-    if (Array.isArray(c.material)) c.material.forEach((m) => m.dispose?.());
-    else c.material?.dispose?.();
-  }
+    const mats = Array.isArray(c.material) ? c.material : c.material ? [c.material] : [];
+    for (const m of mats) {
+      if (m.userData?.cached) continue;
+      m.map?.dispose?.();
+      m.dispose?.();
+    }
+  });
+  group.clear();
 }

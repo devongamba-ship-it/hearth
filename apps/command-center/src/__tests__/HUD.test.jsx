@@ -16,6 +16,12 @@ const hud = {
 };
 
 describe("HUD", () => {
+  // DELIBERATE SPEC CARVE-OUT (decided 2026-06-11, PR #11 review concern #2):
+  // the design's HUD lists respiration + posture, but the BAT-27 live feed
+  // intentionally carries no per-second vitals (privacy: aggregates only).
+  // "—" is the intended v1 rendering; BAT-33 extends the feed with coarse
+  // 1 Hz *estimates* (still no raw readings), after which these fields light
+  // up. Fabricating values to satisfy the literal criterion would be worse.
   it("shows respiration and posture as unavailable, never fabricated", () => {
     render(<HUD hud={hud} />);
     const resp = screen.getByText("Respiration").closest("div").querySelector("dd");
