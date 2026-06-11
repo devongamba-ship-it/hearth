@@ -236,8 +236,8 @@ def test_quiet_hours_resolves_hour_in_configured_timezone_not_host():
     assert awake.step(frame(2, 0, motion=10.0, fall=True)) is State.SUSPECTED
     assert [t for t in awake.transitions if t.kind == db.SUPPRESSED] == []
 
-    # Same instant, Auckland (UTC+12/13) -> ~02:00, inside quiet hours -> in-bed
-    # stillness is suppressed.
+    # Same instant, Auckland (NZDT, UTC+13 in January) -> ~03:00, inside quiet
+    # hours -> in-bed stillness is suppressed.
     asleep = machine("Pacific/Auckland")
     assert asleep.step(frame(2, 0, motion=10.0, fall=True)) is State.NORMAL
     sup = [t for t in asleep.transitions if t.kind == db.SUPPRESSED]

@@ -8,6 +8,9 @@ dependencies = [
     "sqlalchemy>=2.0",
     "uvicorn>=0.29",
     "pyyaml>=6.0",
+    # IANA zone data for zoneinfo on platforms without a system tz database
+    # (Windows). Linux resolves from /usr/share/zoneinfo either way.
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

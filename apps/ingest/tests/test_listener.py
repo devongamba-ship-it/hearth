@@ -74,7 +74,8 @@ def test_malformed_packets_dropped_not_crashing(session_factory):
     # Every malformed fixture is a non-empty datagram: a zero-length UDP send is
     # not reliably delivered on every OS (Windows may drop it at the socket layer
     # before it reaches the protocol), which made the count flaky. "Too long" and
-    # "too short" cover both sides of the size check (BAT-32).
+    # "too short" are two distinct violations of decode()'s single size check
+    # (len != PACKET_SIZE) — deterministic on every OS (BAT-32).
     payloads = [
         b"\x00" * (PACKET_SIZE + 1),  # too long
         b"\x00" * 31,                 # too short
