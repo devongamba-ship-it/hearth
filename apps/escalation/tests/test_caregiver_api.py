@@ -28,8 +28,10 @@ def client(monkeypatch, db_url, config):
 
 
 def test_active_and_history_listing(client):
-    a = client.engine.escalate(room="kitchen")
-    b = client.engine.escalate(room="bathroom")
+    # Distinct homes so the new fall.confirmed 5-min/home dedupe (BAT-31) keeps
+    # these as two separate incidents rather than collapsing them.
+    a = client.engine.escalate(room="kitchen", home_name="HomeA")
+    b = client.engine.escalate(room="bathroom", home_name="HomeB")
     client.engine.resolve(b, disposition="recovered", reason_code="ok")
 
     active = client.get("/api/incidents/active").json()["incidents"]
@@ -47,8 +49,9 @@ def test_incident_detail_replays_cascade_timeline(client):
     assert body["id"] == incident_id
     assert body["status"] == db.ACTIVE
     kinds = [e["kind"] for e in body["cascade"]]
-    # The T+0 alert step is on the timeline with wall-clock timestamps.
-    assert "incident_created" in kinds and "alert_broadcast" in kinds
+    # The T+0 steps (push + ops queue) are on the timeline with timestamps.
+    assert "incident_created" in kinds and "push_sent" in kinds
+    assert "ops_queued" in kinds
     assert all("at" in e for e in body["cascade"])
 
 

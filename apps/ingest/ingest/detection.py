@@ -18,6 +18,7 @@ import os
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -88,9 +89,24 @@ class DetectionConfig:
     bedroom_nodes: tuple[int, ...] = ()
     quiet_hours: QuietHours = field(default_factory=QuietHours)
     checkin: CheckInConfig = field(default_factory=CheckInConfig)
+    # IANA name (e.g. "America/New_York") for the home's wall clock; quiet-hours
+    # logic resolves the hour in this zone. ``None`` means the host's local time
+    # — correct on a device that lives in the home, but explicit injection makes
+    # the behavior deterministic regardless of where the process runs (BAT-32).
+    timezone: str | None = None
 
     def room_for(self, node_id: int) -> str:
         return self.rooms.get(node_id, f"node-{node_id}")
+
+    def hour_at(self, now: float) -> int:
+        """Wall-clock hour (0-23) of epoch ``now`` in the home's timezone.
+
+        The single place an epoch becomes an hour-of-day; both the quiet-hours
+        suppression and the stillness-threshold boost go through here so they
+        never disagree, and neither silently inherits the host's timezone.
+        """
+        tz = ZoneInfo(self.timezone) if self.timezone else None
+        return datetime.fromtimestamp(now, tz).hour
 
     def stillness_threshold_at(self, hour: int) -> float:
         """Stillness threshold for the given wall-clock hour (quiet-hours boost)."""
@@ -99,7 +115,7 @@ class DetectionConfig:
         return self.stillness_threshold
 
     def threshold_for_clock(self, now: float) -> float:
-        return self.stillness_threshold_at(datetime.fromtimestamp(now).hour)
+        return self.stillness_threshold_at(self.hour_at(now))
 
     def is_bedroom(self, node_id: int) -> bool:
         return node_id in self.bedroom_nodes
@@ -120,6 +136,7 @@ def _parse(data: dict | None) -> DetectionConfig:
         "checkin_timeout_secs",
         "dedupe_window_secs",
         "home_name",
+        "timezone",
     ):
         if key in data and data[key] is not None:
             overrides[key] = data[key]
