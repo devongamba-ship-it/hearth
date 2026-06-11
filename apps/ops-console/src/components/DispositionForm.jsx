@@ -9,6 +9,8 @@
 
 import { useState } from "react";
 
+import { dispositionLabel } from "../format.js";
+
 export const DISPOSITIONS = [
   { code: "recovered", label: "Recovered" },
   { code: "caregiver_responding", label: "Caregiver responding" },
@@ -30,7 +32,7 @@ export default function DispositionForm({ incident, operator = "ops", onResolve 
       <section aria-label="Disposition">
         <h3>Disposition</h3>
         <p className="resolved-line">
-          Resolved — <strong>{incident.disposition}</strong>
+          Resolved — <strong>{dispositionLabel(incident.disposition)}</strong>
           {incident.disposition_reason ? ` (${incident.disposition_reason})` : ""}
         </p>
       </section>

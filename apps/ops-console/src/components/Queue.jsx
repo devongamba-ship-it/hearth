@@ -15,7 +15,10 @@ import Chip from "./Chip.jsx";
 
 // Primary copy + chip for one queue row. Escalation only fires after a confirmed
 // fall, so an open row's state is CONFIRMED_FALL; a resolved row shows its
-// disposition instead. An optional matching live track supplies the confidence.
+// disposition instead. No confidence on the chip: live tracks carry
+// identity_confidence, which is NOT fall-match confidence — conflating them
+// would break the identity-honesty rule. A real match score is a backend
+// follow-up.
 function rowCopy(incident, track) {
   if (incident.status === "resolved") {
     return {
@@ -25,7 +28,7 @@ function rowCopy(incident, track) {
   }
   return {
     primary: primaryCopy({ state: "CONFIRMED_FALL", trackLabel: track?.label || "A" }),
-    chip: codeChip({ state: "CONFIRMED_FALL", confidence: track?.confidence }),
+    chip: codeChip({ state: "CONFIRMED_FALL" }),
   };
 }
 
