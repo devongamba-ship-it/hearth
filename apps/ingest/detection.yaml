@@ -45,3 +45,19 @@ quiet_hours:
   end_hour: 7
   stillness_threshold: 120.0
   in_bed_suppression: true
+
+# Resident voice check-in (BAT-30). Swapping `provider` is the ONLY change
+# needed to go from the no-hardware stub to live audio — no code edits.
+#   stub        — v1 default: no microphone, the check-in always times out into
+#                 CONFIRMED_FALL (the BAT-22 behaviour).
+#   local_audio — Raspberry Pi + USB speakerphone: capture during the check-in
+#                 window only, offline keyword spotting, escalate "help" at once.
+# See ingest/checkin/README.md for the Pi audio-device setup.
+checkin:
+  provider: stub
+  device: null            # speakerphone device name/substring (e.g. "PowerConf")
+  listen_window_secs: 45  # hard cap on how long the mic may stay open per check-in
+  confidence_threshold: 0.6
+  vad_energy_threshold: 350.0   # RMS above which a frame counts as speech
+  model_path: null        # offline Vosk model directory (local_audio only)
+  samplerate: 16000

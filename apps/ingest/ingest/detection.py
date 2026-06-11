@@ -47,6 +47,25 @@ class QuietHours:
 
 
 @dataclass(frozen=True)
+class CheckInConfig:
+    """Voice check-in provider selection + tunables (BAT-30).
+
+    ``provider`` picks the seam implementation — ``stub`` (no hardware, always
+    times out) or ``local_audio`` (mic capture + offline keyword spotter). The
+    rest configure the local-audio path; the stub ignores them. Swapping
+    providers is config-only (AC#3): no machine code changes either way.
+    """
+
+    provider: str = "stub"  # "stub" | "local_audio"
+    device: str | None = None  # audio device name/substring for the speakerphone
+    listen_window_secs: int = 45  # mic stays open at most this long per check-in
+    confidence_threshold: float = 0.6  # min recognizer confidence to accept a word
+    vad_energy_threshold: float = 350.0  # RMS above which a frame counts as speech
+    model_path: str | None = None  # offline Vosk model dir (local_audio on the Pi)
+    samplerate: int = 16000
+
+
+@dataclass(frozen=True)
 class DetectionConfig:
     """All fall-machine tunables. Seconds unless noted."""
 
@@ -69,6 +88,7 @@ class DetectionConfig:
     # node_ids that are bedrooms (eligible for in-bed sleep-window suppression).
     bedroom_nodes: tuple[int, ...] = ()
     quiet_hours: QuietHours = field(default_factory=QuietHours)
+    checkin: CheckInConfig = field(default_factory=CheckInConfig)
     # IANA name (e.g. "America/New_York") for the home's wall clock; quiet-hours
     # logic resolves the hour in this zone. ``None`` means the host's local time
     # — correct on a device that lives in the home, but explicit injection makes
@@ -129,6 +149,12 @@ def _parse(data: dict | None) -> DetectionConfig:
         overrides["quiet_hours"] = replace(
             QuietHours(),
             **{k: v for k, v in qh.items() if v is not None and k in QuietHours().__dict__},
+        )
+    if "checkin" in data and data["checkin"]:
+        ci = data["checkin"]
+        overrides["checkin"] = replace(
+            CheckInConfig(),
+            **{k: v for k, v in ci.items() if v is not None and k in CheckInConfig().__dict__},
         )
     return replace(base, **overrides)
 

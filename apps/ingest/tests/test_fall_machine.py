@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 import pytest
 
 from ingest import db
-from ingest.checkin import StubCheckInProvider
+from ingest.checkin import CheckInResult, StubCheckInProvider
 from ingest.detection import DetectionConfig, QuietHours
 from ingest.escalator import NullEscalator
 from ingest.fall_machine import FallMachine, Frame, State
@@ -118,8 +118,9 @@ def test_suspected_window_elapses_without_confirmation():
 
 def test_checkin_answered_dismisses_without_escalating():
     class AnsweringProvider(StubCheckInProvider):
-        def responded(self, node_id, now_ms):
-            return now_ms >= 25_000  # answers 5s into the check-in
+        def poll(self, node_id, now_ms):
+            # Resident says "I'm fine" 5s into the check-in.
+            return CheckInResult.OK if now_ms >= 25_000 else CheckInResult.PENDING
 
     m = make_machine()
     m.checkin = AnsweringProvider()

@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from . import db
-from .checkin import CheckInProvider, StubCheckInProvider
+from .checkin import CheckInProvider, CheckInResult, StubCheckInProvider
 from .detection import DetectionConfig
 from .escalator import Escalation, Escalator, NullEscalator
 
@@ -239,13 +239,21 @@ class FallMachine:
         self._enter(ns, frame, State.CHECK_IN_ACTIVE, db.TRANSITION)
 
     def _on_check_in(self, ns: NodeState, frame: Frame) -> None:
-        if self.checkin.responded(frame.node_id, frame.ts):
+        result = self.checkin.poll(frame.node_id, frame.ts)
+        if result is CheckInResult.OK:
+            # Resident answered "I'm fine" — recovered, never alert.
             self.checkin.cancel(frame.node_id)
             self._dismiss(ns, frame, reason="checkin_answered", kind=db.NEAR_FALL)
             return
+        if result is CheckInResult.HELP:
+            # Active distress call — escalate immediately, don't wait out the
+            # window (BAT-30 fast-path; audit the reason as help_keyword).
+            self.checkin.cancel(frame.node_id)
+            self._confirm(ns, frame, reason="help_keyword")
+            return
         if frame.ts - ns.checkin_since >= self.config.checkin_timeout_secs * 1000:
             self.checkin.cancel(frame.node_id)
-            self._confirm(ns, frame)
+            self._confirm(ns, frame, reason="checkin_timeout")
 
     def _on_confirmed(self, ns: NodeState, frame: Frame) -> None:
         # Already escalated. Stay put until the person is clearly active again,
@@ -275,8 +283,8 @@ class FallMachine:
         ns.stillness_secs = 0
         ns.motion_run = 0
 
-    def _confirm(self, ns: NodeState, frame: Frame) -> None:
-        self._enter(ns, frame, State.CONFIRMED_FALL, db.CONFIRMED_FALL)
+    def _confirm(self, ns: NodeState, frame: Frame, *, reason: str | None = None) -> None:
+        self._enter(ns, frame, State.CONFIRMED_FALL, db.CONFIRMED_FALL, reason)
         ns.motion_run = 0
         if self._deduped(ns, frame):
             log.info("CONFIRMED_FALL node=%s deduped (within %ds window)",
@@ -400,6 +408,7 @@ def main() -> None:  # pragma: no cover - operational entrypoint
     import os
     import time as _time
 
+    from .checkin import build_checkin_provider
     from .db import init_db, make_engine, make_session_factory
     from .detection import load_config
     from .escalator import HttpEscalator
@@ -408,8 +417,10 @@ def main() -> None:  # pragma: no cover - operational entrypoint
     engine = make_engine()
     init_db(engine)
     sessions = make_session_factory(engine)
+    config = load_config()
     machine = FallMachine(
-        load_config(), escalator=HttpEscalator(), session_factory=sessions,
+        config, escalator=HttpEscalator(), session_factory=sessions,
+        checkin=build_checkin_provider(config),
     )
     runner = FallMachineRunner(machine, sessions)
     interval = float(os.environ.get("HEARTH_FALL_POLL_SECS", "1.0"))
