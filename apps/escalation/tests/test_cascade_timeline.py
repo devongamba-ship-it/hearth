@@ -15,26 +15,26 @@ def _kinds(engine, incident_id):
     return [e.kind for e in engine.timeline(incident_id)]
 
 
-def test_alert_broadcast_at_t0(engine, clock):
+def test_fall_t0_pushes_circle_and_queues_ops(engine, clock):
+    # BAT-31 registry table: T+0 is push circle + ops queue; SMS holds to T+60.
     clock.set(0)
     incident_id = engine.escalate(room="kitchen")
 
     timeline = engine.timeline(incident_id)
     kinds = [e.kind for e in timeline]
-    assert kinds == ["incident_created", "alert_broadcast"]
-    # P1 event logged at T+0.
+    assert kinds == ["incident_created", "push_sent", "ops_queued"]
+    # P1 events logged at T+0.
     assert all(e.at == 0 for e in timeline)
     assert all(e.priority == "P1" for e in timeline)
 
-    # SMS + push reached every circle contact (Dana: sms+push, Marcus: sms).
+    # Push reached the push-capable contact (Dana), with the ack instructions;
+    # the ops queue got its notice; nobody got SMS yet.
     sent = engine.notifier.sent
-    channels = sorted((m.channel, m.to) for m in sent)
-    assert channels == [
-        (PUSH, "+15555550101"),
-        (SMS, "+15555550101"),
-        (SMS, "+15555550102"),
-    ]
-    assert all("Reply OK to acknowledge" in m.body for m in sent)
+    pushes = [m for m in sent if m.channel == PUSH]
+    assert [m.to for m in pushes] == ["+15555550101"]
+    assert all("Reply OK to acknowledge" in m.body for m in pushes)
+    assert [m for m in sent if m.channel == SMS] == []
+    assert [m.to for m in sent if m.channel == "ops"] == ["ops-queue"]
 
 
 def test_voice_ladder_then_operator_timing(engine, clock):
@@ -46,9 +46,11 @@ def test_voice_ladder_then_operator_timing(engine, clock):
     assert engine.process_due() == 0
     assert "voice_calls" not in _kinds(engine, incident_id)
 
-    # Voice ladder fires at T+60, in priority order.
+    # T+60 fires the SMS step and the voice ladder (registry order).
     clock.set(VOICE_DELAY)
-    assert engine.process_due() == 1
+    assert engine.process_due() == 2
+    sms = [m for m in engine.notifier.sent if m.channel == SMS]
+    assert [m.to for m in sms] == ["+15555550101", "+15555550102"]
     voice_calls = [m for m in engine.notifier.sent if m.channel == VOICE]
     assert [m.to for m in voice_calls] == ["+15555550101", "+15555550102"]
 

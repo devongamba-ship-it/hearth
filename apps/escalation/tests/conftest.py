@@ -55,11 +55,14 @@ def db_url(tmp_path) -> str:
     return f"sqlite:///{tmp_path / 'escalation.db'}"
 
 
-def make_engine(db_url: str, config, clock, notifier=None) -> CascadeEngine:
+def make_engine(db_url: str, config, clock, notifier=None, registry=None) -> CascadeEngine:
     engine = db.make_engine(db_url)
     db.init_db(engine)
     sessions = db.make_session_factory(engine)
-    return CascadeEngine(sessions, config, notifier=notifier or DryRunNotifier(), clock=clock)
+    return CascadeEngine(
+        sessions, config, notifier=notifier or DryRunNotifier(), clock=clock,
+        registry=registry,
+    )
 
 
 @pytest.fixture
