@@ -320,8 +320,7 @@ class FallMachine:
         return None
 
     def _wall_hour(self) -> int:
-        from datetime import datetime
-        return datetime.fromtimestamp(self._clock()).hour
+        return self.config.hour_at(self._clock())
 
     # -- persistence ---------------------------------------------------------
 

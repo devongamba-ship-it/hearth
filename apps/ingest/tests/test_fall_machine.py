@@ -7,6 +7,8 @@ the persisted transition log.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from ingest import db
@@ -193,11 +195,15 @@ def test_fall_flag_without_presence_is_suppressed():
 
 
 def test_in_bed_stillness_during_quiet_hours_is_suppressed():
-    night = NOON + 12 * 3600  # midnight
+    night = NOON + 12 * 3600  # midnight UTC
+    # Pin the home's timezone explicitly so "night" is night on every host —
+    # without this the suppression evaluates in the host's local time and the
+    # test is green only on a UTC machine (BAT-32).
     m = FallMachine(
         DetectionConfig(
             bedroom_nodes=(2,),
             quiet_hours=QuietHours(enabled=True, start_hour=22, end_hour=7),
+            timezone="UTC",
         ),
         escalator=NullEscalator(), clock=lambda: night,
     )
@@ -206,6 +212,36 @@ def test_in_bed_stillness_during_quiet_hours_is_suppressed():
     sup = [t for t in m.transitions if t.kind == db.SUPPRESSED]
     assert sup and sup[0].reason == "in_bed_sleep_window"
     assert m.escalator.calls == []
+
+
+def test_quiet_hours_resolves_hour_in_configured_timezone_not_host():
+    # One UTC instant, two homes: 14:00 UTC is mid-afternoon in UTC (awake) but
+    # ~02:00 the next day in Auckland (asleep). The suppression must follow the
+    # configured zone, not whatever timezone the test host happens to run in —
+    # so this assertion holds identically on a UTC CI box and an ET dev laptop.
+    instant = datetime(2026, 1, 15, 14, 0, tzinfo=timezone.utc).timestamp()
+
+    def machine(tz):
+        return FallMachine(
+            DetectionConfig(
+                bedroom_nodes=(2,),
+                quiet_hours=QuietHours(enabled=True, start_hour=22, end_hour=7),
+                timezone=tz,
+            ),
+            escalator=NullEscalator(), clock=lambda: instant,
+        )
+
+    # 14:00 UTC -> daytime -> a fall flag is taken seriously (not suppressed).
+    awake = machine("UTC")
+    assert awake.step(frame(2, 0, motion=10.0, fall=True)) is State.SUSPECTED
+    assert [t for t in awake.transitions if t.kind == db.SUPPRESSED] == []
+
+    # Same instant, Auckland (UTC+12/13) -> ~02:00, inside quiet hours -> in-bed
+    # stillness is suppressed.
+    asleep = machine("Pacific/Auckland")
+    assert asleep.step(frame(2, 0, motion=10.0, fall=True)) is State.NORMAL
+    sup = [t for t in asleep.transitions if t.kind == db.SUPPRESSED]
+    assert sup and sup[0].reason == "in_bed_sleep_window"
 
 
 # -- persistence: every transition is queryable per incident (for BAT-25)
