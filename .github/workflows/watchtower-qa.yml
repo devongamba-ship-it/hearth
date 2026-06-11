@@ -1,0 +1,85 @@
+# Watchtower QA — nightly verification of main + automatic bug filing.
+#
+# Phase 1 (deterministic, zero API cost): full lint + test + build + the
+# packet_sim e2e suite against main. Green → done, no Claude invocation.
+# Phase 2 (only on failure): Claude analyzes the failure and files ONE Linear
+# issue labeled agent-ready with logs and repro — which the builder agent
+# then fixes on its next cron tick. Build → verify → file → fix, closed loop.
+
+name: Watchtower QA
+
+on:
+  schedule:
+    - cron: "30 7 * * *"   # 07:30 UTC nightly, offset from builder's even hours
+  workflow_dispatch:
+
+concurrency:
+  group: watchtower-qa
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/caregiver-web/package-lock.json
+
+      - name: Verify main (lint, tests, build)
+        id: verify
+        run: |
+          set -o pipefail
+          {
+            for app in ingest escalation; do
+              echo "=== $app: install ===" && pip install -e "apps/$app[dev]"
+              echo "=== $app: ruff ==="    && (cd "apps/$app" && ruff check .)
+              echo "=== $app: pytest ==="  && (cd "apps/$app" && pytest -q)
+            done
+            echo "=== caregiver-web: build ===" \
+              && (cd apps/caregiver-web && npm ci --silent && npm run build)
+          } 2>&1 | tee qa-output.log
+
+      - name: File a Linear issue for the regression (Claude, failure only)
+        if: failure()
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: >-
+            --max-turns 30
+            --allowed-tools "Bash"
+          prompt: |
+            You are the Watchtower QA agent for the Hearth repo. The nightly
+            verification of main FAILED. The full output is in qa-output.log
+            in the working directory.
+
+            1. Read qa-output.log and identify the root failure (first real
+               error, not cascading noise).
+            2. Search Linear (LINEAR_API_KEY env, team key BAT, project
+               "Hearth — Phase 1: WiFi Fall Detection MVP") for an OPEN issue
+               whose title starts with "[QA]" describing the same failure.
+               If one exists, add a comment "still failing as of <run url>"
+               and STOP — do not file a duplicate.
+            3. Otherwise create ONE Linear issue:
+               - title: "[QA] <concise failure summary>"
+               - labels: agent-ready; priority: High (2)
+               - description: what failed, the exact error excerpt (trimmed),
+                 the commands to reproduce locally, link to this run:
+                 ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+               - acceptance criteria: the failing command(s) pass on main
+
+            HARD RULES: do not modify code, do not push, do not open PRs.
+            File or update exactly one Linear issue, then exit.
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}

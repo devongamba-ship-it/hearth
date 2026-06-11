@@ -1,0 +1,73 @@
+# Watchtower Reviewer — independent code review on every agent PR.
+#
+# Role: second pair of eyes before the human (or human-authorized) merge.
+# It COMMENTS ONLY: never approves, never merges, never pushes code, never
+# marks ready-for-review. Complements the merge-time scan (secrets/tests/CI)
+# with an actual read of the logic against the Linear spec.
+
+name: Watchtower Reviewer
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+concurrency:
+  group: reviewer-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Review the PR
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: >-
+            --max-turns 40
+            --allowed-tools "Bash"
+          prompt: |
+            You are the Watchtower REVIEWER for the Hearth repo. Read
+            CLAUDE.md at the repo root — its architecture invariants and
+            privacy rules are the review bar.
+
+            Review PR #${{ github.event.pull_request.number }}
+            ("${{ github.event.pull_request.title }}").
+
+            1. If the title starts with "[BAT-NN]", fetch that Linear issue
+               AND its comments via the Linear API (LINEAR_API_KEY env).
+               Comments marked "CANONICAL DESIGN UPDATE" supersede the
+               description.
+            2. Read the full diff (`gh pr diff`). Judge:
+               - Correctness of the logic, edge cases, race conditions
+               - Spec adherence: every acceptance criterion covered by the
+                 implementation AND by at least one test
+               - Privacy/architecture invariants from CLAUDE.md (local-first,
+                 no raw data to clients, dry-run defaults, no secrets)
+               - Test quality: do the tests actually assert the criteria, or
+                 only happy paths?
+            3. Post ONE review via
+               `gh pr review ${{ github.event.pull_request.number }} --comment --body "..."`
+               structured as: VERDICT line first —
+               "REVIEWER VERDICT: LGTM" or "REVIEWER VERDICT: CONCERNS (n)" —
+               then findings ordered by severity, each with file:line and a
+               concrete fix. If clean, say so briefly; do not invent nitpicks.
+
+            HARD RULES: comment only. Never approve, never request changes
+            formally, never merge, never push commits, never edit the PR or
+            Linear state. One review comment per run.
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
