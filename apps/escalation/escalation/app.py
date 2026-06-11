@@ -80,7 +80,11 @@ def escalate(payload: dict, request: Request) -> dict:
     room = payload.get("room")
     if not room:
         raise HTTPException(status_code=422, detail="'room' is required")
-    incident_id = engine.escalate(room=room, home_name=payload.get("home_name"))
+    incident_id = engine.escalate(
+        room=room,
+        home_name=payload.get("home_name"),
+        source_incident_id=payload.get("fall_incident_id"),
+    )
     return {
         "incident_id": incident_id,
         "status": db.ACTIVE,
@@ -108,6 +112,78 @@ def resolve(incident_id: str, payload: dict, request: Request) -> dict:
 def process_due(request: Request) -> dict:
     engine = _engine(request)
     return {"fired": engine.process_due()}
+
+
+# -- caregiver read API (BAT-25) --------------------------------------------
+#
+# The caregiver web app polls these. They expose only alert events and coarse
+# incident status — never raw sensor readings (CLAUDE.md: privacy is the brand).
+
+
+def _incident_json(incident: db.Incident) -> dict:
+    """A coarse incident summary safe to leave the home."""
+    return {
+        "id": incident.id,
+        "home_name": incident.home_name,
+        "room": incident.room,
+        "status": incident.status,
+        "created_at": incident.created_at,
+        "source_incident_id": incident.source_incident_id,
+        "claimed_by": incident.claimed_by,
+        "claimed_at": incident.claimed_at,
+        "claim_deadline": incident.claim_deadline,
+        "disposition": incident.disposition,
+        "disposition_reason": incident.disposition_reason,
+        "resolved_at": incident.resolved_at,
+        "next_action": incident.next_action,
+        "next_action_at": incident.next_action_at,
+    }
+
+
+@app.get("/api/incidents")
+def list_incidents(request: Request) -> dict:
+    """All incidents, newest first — the Alerts screen's history."""
+    engine = _engine(request)
+    return {"incidents": [_incident_json(i) for i in engine.incidents()]}
+
+
+@app.get("/api/incidents/active")
+def active_incidents(request: Request) -> dict:
+    """Unresolved incidents — what the live status card watches."""
+    engine = _engine(request)
+    return {"incidents": [_incident_json(i) for i in engine.incidents(active_only=True)]}
+
+
+@app.get("/api/incidents/{incident_id}")
+def incident_detail(incident_id: str, request: Request) -> dict:
+    """One incident plus its immutable cascade timeline (who/when/claim/disposition)."""
+    engine = _engine(request)
+    incident = engine.get(incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail=f"unknown incident {incident_id}")
+    body = _incident_json(incident)
+    body["cascade"] = _timeline_json(engine, incident_id)
+    return body
+
+
+@app.post("/incidents/{incident_id}/claim")
+def claim_incident(incident_id: str, payload: dict, request: Request) -> dict:
+    """Claim an incident from the caregiver app. Idempotent: a repeat claim on an
+    already-claimed incident returns the current state without re-broadcasting."""
+    engine = _engine(request)
+    by = (payload or {}).get("by")
+    if not by:
+        raise HTTPException(status_code=422, detail="'by' is required")
+    try:
+        incident, claimed_now = engine.claim_idempotent(incident_id, by=by)
+    except CascadeError as exc:
+        # Unknown incident -> 404; already-resolved -> 409 (cannot claim).
+        detail = str(exc)
+        status = 404 if "unknown incident" in detail else 409
+        raise HTTPException(status_code=status, detail=detail) from exc
+    body = _incident_json(incident)
+    body["claimed_now"] = claimed_now
+    return body
 
 
 # -- Twilio webhooks --------------------------------------------------------
