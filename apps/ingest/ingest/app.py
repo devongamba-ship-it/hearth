@@ -13,6 +13,9 @@ readings — CLAUDE.md: privacy is the brand):
   GET /homes/{home_id}/trends         — pre-aggregated weekly trend cards (stub)
   GET /api/activity                   — today's coarse activity blocks (stub)
 
+BAT-42 caregiver weekly wellness digest:
+  GET /api/digest?week=YYYY-MM-DD     — plain-language weekly summary (coarse)
+
 BAT-27 live mesh view:
   WS  /homes/{home_id}/live           — 1 Hz aggregated room/track/event feed
 
@@ -31,7 +34,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
 
-from . import __version__, caregiver
+from . import __version__, caregiver, digest as digest_mod
 from .db import CONFIRMED_FALL, FallTransition, Reading, init_db, make_engine, make_session_factory
 from .detection import load_config
 from .health import build_health
@@ -412,3 +415,38 @@ def activity(request: Request, date: str | None = None) -> dict:
         {"room": room(1), "start": "12:20", "end": "12:55", "label": "Lunch"},
     ]
     return {"date": date, "stub": True, "blocks": blocks}
+
+
+# -- BAT-42 caregiver weekly wellness digest --------------------------------
+
+
+@app.get("/api/digest")
+def weekly_digest(request: Request, week: str | None = None) -> dict:
+    """The caregiver weekly wellness digest: a plain-language, non-medical summary
+    of the week aggregated from the local readings table — never raw readings.
+
+    ``week`` is the ISO date (YYYY-MM-DD) of the week's first day; omitted, it
+    defaults to the most recent complete 7-day window. Coarse summary only
+    (CLAUDE.md: privacy is the brand). Delivery (email, dry-run by default) is a
+    separate scheduled path; this endpoint only renders for the app.
+    """
+    from zoneinfo import ZoneInfo
+
+    config = _config(request)
+    tz = ZoneInfo(config.timezone) if config.timezone else None
+    if week is None:
+        week_start = digest_mod.default_week_start(_now(request), tz)
+    else:
+        try:
+            from datetime import date as _date
+
+            week_start = _date.fromisoformat(week)
+        except ValueError:
+            raise HTTPException(  # noqa: B904
+                status_code=422, detail="week must be an ISO date (YYYY-MM-DD)"
+            )
+
+    factory = _session_factory(request)
+    with factory() as session:
+        aggregate = digest_mod.aggregate_week(session, week_start, config)
+    return digest_mod.generate_digest(aggregate).to_json()
