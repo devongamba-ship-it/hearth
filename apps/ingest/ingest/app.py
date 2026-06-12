@@ -368,11 +368,15 @@ def _build_live_feed(websocket: WebSocket, home_id: str) -> LiveFeed:
     # Data-source label (BAT-34): an app.state override (tests set this) else the
     # operator-set HEARTH_SOURCE env. Defaults to "live" — real silicon is the
     # production case; the operator flips HEARTH_SOURCE=simulated for sim runs.
-    # In demo mode (BAT-43) with no explicit source set, force "simulated" so a
-    # demo can never badge itself as live silicon.
-    source = getattr(websocket.app.state, "source", None) or os.environ.get("HEARTH_SOURCE")
-    if source is None and _demo_enabled(websocket):
+    # Demo mode (BAT-43) HARD-OVERRIDES to "simulated": when the service is
+    # playing a demo, every frame it emits is fabricated, so an operator's stale
+    # HEARTH_SOURCE=live must not be able to badge simulated data as live silicon
+    # (AC3: "never confusable with live"; privacy is the brand).
+    if _demo_enabled(websocket):
         source = "simulated"
+    else:
+        source = (getattr(websocket.app.state, "source", None)
+                  or os.environ.get("HEARTH_SOURCE"))
     return LiveFeed(
         factory, layout, home_id=home_id, source=resolve_source(source), clock=clock
     )
@@ -411,14 +415,25 @@ def _demo_guard(request: Request) -> None:
         raise HTTPException(status_code=404, detail="demo mode is not enabled")
 
 
-def _stop_demo(app: FastAPI) -> None:
-    """Cancel any in-flight playout (a fresh play or a reset supersedes it)."""
+async def _stop_demo(app: FastAPI) -> None:
+    """Cancel any in-flight playout and await it before returning.
+
+    Awaiting the cancelled task closes a race: cancellation is cooperative (it
+    lands at the next ``await`` inside ``play_async``), so without the await a
+    superseding play could start while the old playout writes one more ``step``
+    — duplicate readings. Runs on the event loop (callers are ``async``).
+    """
     player = getattr(app.state, "demo_player", None)
     if player is not None:
         player.cancel()
     task = getattr(app.state, "demo_task", None)
     if task is not None and not task.done():
         task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    app.state.demo_task = None
     app.state.demo_task = None
 
 
@@ -457,7 +472,7 @@ async def demo_play(request: Request, body: DemoPlayRequest) -> dict:
             detail=f"unknown scenario {body.scenario!r}; "
             f"choose one of {demo_mod.scenario_names()}",
         )
-    _stop_demo(request.app)
+    await _stop_demo(request.app)
 
     factory = _session_factory(request)
     escalator = getattr(request.app.state, "demo_escalator", None) or HttpEscalator()
@@ -485,10 +500,14 @@ async def demo_play(request: Request, body: DemoPlayRequest) -> dict:
 
 
 @app.post("/api/demo/reset")
-def demo_reset(request: Request) -> dict:
-    """Stop any playout and wipe the ingest pipeline back to a clean slate (BAT-43)."""
+async def demo_reset(request: Request) -> dict:
+    """Stop any playout and wipe the ingest pipeline back to a clean slate (BAT-43).
+
+    Async so ``_stop_demo`` cancels the playout task on the event-loop thread —
+    cancelling an asyncio task from FastAPI's sync threadpool is not safe.
+    """
     _demo_guard(request)
-    _stop_demo(request.app)
+    await _stop_demo(request.app)
     request.app.state.demo_player = None
     cleared = demo_mod.reset(_session_factory(request))
     return {"playing": False, "reset": True, "cleared": cleared, "source": "simulated"}

@@ -207,6 +207,22 @@ def test_live_feed_is_simulated_in_demo_mode(sessions, _clean_app_state):
     assert frame["source"] == "simulated"
 
 
+def test_demo_mode_overrides_an_explicit_live_source(sessions, _clean_app_state):
+    """PR #22 review #1: demo mode HARD-overrides the source. A box left with
+    source='live' that is flipped into demo must still badge frames simulated —
+    simulated data can never read as live silicon (AC3, privacy-is-the-brand)."""
+    app.state.session_factory = sessions
+    app.state.layout = load_layout(DEMO_LAYOUT)
+    app.state.live_interval = 0.01
+    app.state.source = "live"        # the box was running live...
+    app.state.demo_enabled = True    # ...then flipped into demo
+
+    client = TestClient(app)
+    with client.websocket_connect("/homes/rosewood/live") as ws:
+        frame = _first_room_activity(ws)
+    assert frame["source"] == "simulated"  # demo wins, unconditionally
+
+
 def _first_room_activity(ws):
     for _ in range(10):
         msg = ws.receive_json()
