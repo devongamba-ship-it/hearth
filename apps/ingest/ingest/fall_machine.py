@@ -288,7 +288,9 @@ class FallMachine:
         ns.motion_run = 0
         if self._deduped(ns, frame):
             log.info("CONFIRMED_FALL node=%s deduped (within %ds window)",
-                     frame.node_id, self.config.dedupe_window_secs)
+                     frame.node_id, self.config.dedupe_window_secs,
+                     extra={"event": "fall_deduped", "node_id": frame.node_id,
+                            "incident_id": ns.incident_id or None})
             return
         ns.last_confirmed = frame.ts
         room = self.config.room_for(frame.node_id)
@@ -298,7 +300,10 @@ class FallMachine:
             home_name=self.config.home_name, at_ms=frame.ts,
         ))
         if not ok:
-            log.error("escalation hand-off failed for node=%s", frame.node_id)
+            log.error("escalation hand-off failed for node=%s", frame.node_id,
+                      extra={"event": "escalation_handoff_failed",
+                             "node_id": frame.node_id,
+                             "incident_id": ns.incident_id or None, "room": room})
 
     def _deduped(self, ns: NodeState, frame: Frame) -> bool:
         if ns.last_confirmed is None:
@@ -341,7 +346,10 @@ class FallMachine:
             features=frame.features(),
         ))
         log.info("node=%s %s -> %s (%s%s)", frame.node_id, frm.value, to.value,
-                 kind, f": {reason}" if reason else "")
+                 kind, f": {reason}" if reason else "",
+                 extra={"event": "fall_transition", "node_id": frame.node_id,
+                        "incident_id": incident_id or None, "from_state": frm.value,
+                        "to_state": to.value, "kind": kind})
         if self._sessions is None:
             return
         with self._sessions() as session:
@@ -412,8 +420,9 @@ def main() -> None:  # pragma: no cover - operational entrypoint
     from .db import init_db, make_engine, make_session_factory
     from .detection import load_config
     from .escalator import HttpEscalator
+    from .logconfig import configure_logging
 
-    logging.basicConfig(level=logging.INFO)
+    configure_logging("ingest")
     engine = make_engine()
     init_db(engine)
     sessions = make_session_factory(engine)

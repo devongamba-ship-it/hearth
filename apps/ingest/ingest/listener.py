@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 
 from sqlalchemy import select
 
@@ -28,6 +29,7 @@ from .db import (
     make_engine,
     make_session_factory,
 )
+from .logconfig import configure_logging
 
 log = logging.getLogger("hearth.ingest.listener")
 
@@ -38,13 +40,18 @@ def udp_port() -> int:
     return int(os.environ.get("HEARTH_UDP_PORT", DEFAULT_UDP_PORT))
 
 
-def persist(session_factory, v: Vitals) -> None:
+def persist(session_factory, v: Vitals, received_at: float | None = None) -> None:
     """Insert a reading, and an event row if the node's fall flag just changed.
 
     The previous fall state is read back from the DB (not held in memory) so the
     transition logic survives a listener restart. A node's first-ever packet is
     treated as a transition from an implicit not-fallen baseline.
+
+    ``received_at`` is the wall-clock epoch stamped on the row (defaults to now);
+    ``/health`` reads it for per-node last-seen age. Tests pass it explicitly to
+    make staleness deterministic.
     """
+    stamp = time.time() if received_at is None else received_at
     with session_factory() as session:
         prev = session.execute(
             select(Reading.fall_flag)
@@ -64,6 +71,7 @@ def persist(session_factory, v: Vitals) -> None:
                 confidence=v.presence_score,
                 fall_flag=v.fall,
                 occupancy=v.occupancy,
+                received_at=stamp,
             )
         )
 
@@ -84,17 +92,21 @@ class VitalsProtocol(asyncio.DatagramProtocol):
         self.malformed = 0
 
     def datagram_received(self, data: bytes, addr) -> None:
+        peer = addr[0] if isinstance(addr, tuple) else str(addr)
         try:
             v = decode(data)
         except PacketError as exc:
             self.malformed += 1
-            log.warning("dropped malformed packet from %s: %s", addr, exc)
+            log.warning("dropped malformed packet: %s", exc,
+                        extra={"event": "packet_malformed", "peer": peer})
             return
         try:
             persist(self.session_factory, v)
         except Exception:  # noqa: BLE001 - a bad write must not kill the listener
             self.malformed += 1
-            log.exception("failed to persist packet from %s", addr)
+            log.exception("failed to persist packet",
+                          extra={"event": "persist_failed", "peer": peer,
+                                 "node_id": v.node_id})
             return
         self.received += 1
 
@@ -115,7 +127,8 @@ async def _run() -> None:
     init_db(engine)
     session_factory = make_session_factory(engine)
     transport, _protocol = await create_listener(session_factory)
-    log.info("ingest listener up on UDP :%d", udp_port())
+    log.info("ingest listener up on UDP :%d", udp_port(),
+             extra={"event": "listener_up"})
     try:
         while True:
             await asyncio.sleep(3600)
@@ -124,7 +137,7 @@ async def _run() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging("ingest")
     asyncio.run(_run())
 
 

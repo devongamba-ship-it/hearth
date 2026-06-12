@@ -40,6 +40,35 @@ python -m ingest.listener
 python tools/packet_sim.py --scenario normal
 ```
 
+## Observability (BAT-37)
+
+`GET /health` is a real status payload, not just a liveness ping — so when a
+node goes silent at 3 AM you can see *why* without SSHing into the Pi:
+
+- **per-node**: last-seen age, reading count, latest confidence (the CSI-quality
+  proxy), and an `online`/`stale` flag. A node configured in the layout /
+  detection rooms but never heard from shows up too, with `reading_count: 0`.
+- **aggregate**: nodes online / expected, DB write rate (readings/min), uptime,
+  active-incident count, and the configured `home_id`.
+- **status**: `ok` (all nodes online) · `degraded` (≥1 node stale) · `down`
+  (nothing reporting).
+
+A node is `stale` once it has been silent past the dropout window
+(`HEARTH_NODE_DROPOUT_SECS`, default 30s). `home_id` comes from `HEARTH_HOME_ID`
+(else the layout). Coarse status only — never a raw reading.
+
+Eyeball it on flash day:
+
+```bash
+python tools/hearth_status.py --url http://pi.local:8000   # pretty node table
+python tools/hearth_status.py --raw                        # the JSON payload
+```
+
+Logs are **structured**: `HEARTH_LOG_FORMAT=json` (prod, one JSON object per
+line) or `text` (dev, default); level via `HEARTH_LOG_LEVEL` (default `INFO`).
+Each line carries coarse context (`event`, `node_id`, `room`, `incident_id`) —
+never raw readings or secrets.
+
 ## Develop
 
 ```bash

@@ -511,8 +511,9 @@ def main() -> None:  # pragma: no cover - operational entrypoint
     import time as _time
 
     from .db import make_engine, make_session_factory
+    from .logconfig import configure_logging
 
-    logging.basicConfig(level=logging.INFO)
+    configure_logging("ingest")
     config = load_config()
     engine = RoutinesEngine(config, emitter=HttpIncidentEmitter())
     sessions = make_session_factory(make_engine())

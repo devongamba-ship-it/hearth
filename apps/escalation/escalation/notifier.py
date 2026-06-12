@@ -48,7 +48,8 @@ class DryRunNotifier(Notifier):
     def send(self, channel: str, to: str, body: str) -> SentMessage:
         msg = SentMessage(channel=channel, to=to, body=body)
         self.sent.append(msg)
-        logger.info("DRY-RUN %s -> %s: %s", channel, to, body)
+        logger.info("DRY-RUN %s -> %s: %s", channel, to, body,
+                    extra={"event": "notify_dry_run", "status": "dry_run"})
         return msg
 
 
