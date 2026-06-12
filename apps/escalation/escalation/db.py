@@ -1,6 +1,6 @@
 """Local SQLite persistence for the escalation service.
 
-Two tables:
+Three tables:
 
 * ``incidents`` — one row per CONFIRMED_FALL cascade, holding the *mutable*
   cascade state including the persisted ``next_action_at`` deadline so timers
@@ -8,6 +8,10 @@ Two tables:
 * ``cascade_events`` — the **immutable audit log**. Rows are only ever inserted,
   never updated or deleted: who was contacted, when, who claimed, the final
   disposition + reason code.
+* ``quiet_windows`` — resident-initiated "I'm OK, stand down" windows (BAT-39).
+  The row *is* the audit record: start, end, actor, source, and any cancel. A
+  window auto-expires at ``ends_at`` (no timer needed — expiry is computed from
+  the clock), and never suppresses a P1 ``fall.confirmed`` page.
 
 Local-first (CLAUDE.md): the DB is a file on the home device. Override with
 ``HEARTH_ESCALATION_DB_URL`` (tests use an in-memory URL). Never cloud storage.
@@ -30,9 +34,12 @@ ACTIVE = "active"
 CLAIMED = "claimed"
 RESOLVED = "resolved"
 AUTO_RESOLVED = "auto_resolved"
+# Opened during a resident quiet window (BAT-39): recorded for the digest/audit,
+# but never paged. Terminal so it does not linger in the caregiver "active" list.
+SUPPRESSED = "suppressed"
 
 # Terminal (closed) states — never paged again, excluded from ``state=open``.
-TERMINAL = (RESOLVED, AUTO_RESOLVED)
+TERMINAL = (RESOLVED, AUTO_RESOLVED, SUPPRESSED)
 
 # Cascade ladder step action names (back-compat aliases for the fall policy).
 STEP_VOICE = "voice"
@@ -115,6 +122,33 @@ class CascadeEvent(Base):
     # pre-existing rows and purely-internal events need not carry both.
     actor: Mapped[str | None] = mapped_column(String, nullable=True)
     channel: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class QuietWindow(Base):
+    """A resident-initiated "I'm OK, stand down" quiet window (BAT-39).
+
+    While active (``started_at <= now < ends_at`` and not canceled), non-fall
+    wellness alerts are suppressed. The row is the audit record: who set it
+    (``actor``), from where (``source`` — ``app`` or ``button``), the window
+    bounds, and any cancel. Append-only in spirit; only the cancel fields are
+    ever updated after creation.
+    """
+
+    __tablename__ = "quiet_windows"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    home_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    started_at: Mapped[float] = mapped_column(Float, nullable=False)
+    ends_at: Mapped[float] = mapped_column(Float, nullable=False)
+    # Who asked for quiet ("resident" by default) and where the request came
+    # from: "app" (one-tap) or "button" (future hardware plug point, BAT-39).
+    actor: Mapped[str] = mapped_column(String, nullable=False, default="resident")
+    source: Mapped[str] = mapped_column(String, nullable=False, default="app")
+    reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Set when a resident/caregiver cancels early; an un-canceled window simply
+    # lapses at ``ends_at``.
+    canceled_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    canceled_by: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 def make_engine(url: str | None = None):

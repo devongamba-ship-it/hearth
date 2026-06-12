@@ -11,6 +11,9 @@ Endpoints:
 * ``POST /escalate`` — legacy fall entry (defaults ``type`` to ``fall.confirmed``;
   also honors a ``type`` field so BAT-24 wellness rules raise through this pipe).
 * ``GET  /api/incidents*`` — caregiver read API (BAT-25).
+* ``POST /api/quiet`` / ``GET /api/quiet`` / ``POST /api/quiet/cancel`` —
+  resident "I'm OK / pause" quiet window (BAT-39): suppresses non-fall wellness
+  alerts for the window; never suppresses ``fall.confirmed`` (P1).
 * ``POST /admin/process-due`` — drive persisted timers (a local poller/cron hits
   this; also run on startup to recover pending incidents after a restart).
 * ``POST /webhooks/twilio/sms`` and ``/webhooks/twilio/voice`` — ack/claim
@@ -184,6 +187,92 @@ def resolve(incident_id: str, payload: dict, request: Request) -> dict:
 def process_due(request: Request) -> dict:
     engine = _engine(request)
     return {"fired": engine.process_due()}
+
+
+# -- resident "I'm OK / pause" quiet window (BAT-39) ------------------------
+#
+# A resident-initiated quiet window suppresses NON-fall wellness alerts for N
+# minutes/hours — the antidote to alert fatigue. ``fall.confirmed`` (P1) is never
+# suppressed: a real fall always pages. The window auto-expires and is fully
+# audited (start/end/actor) in the ``quiet_windows`` table.
+#
+# Hardware-button plug point: a future ESP32/BLE "I'm OK" button POSTs the exact
+# same ``POST /api/quiet`` body with ``"source": "button"`` — no separate path.
+# See apps/escalation/README.md for the button contract.
+
+
+def _quiet_json(window, now: float) -> dict:
+    """Coarse quiet-window summary (safe to leave the home: no sensor data)."""
+    remaining = max(0, int(round(window.ends_at - now)))
+    return {
+        "id": window.id,
+        "home_name": window.home_name,
+        "started_at": window.started_at,
+        "ends_at": window.ends_at,
+        "actor": window.actor,
+        "source": window.source,
+        "reason": window.reason,
+        "remaining_seconds": remaining,
+    }
+
+
+@app.get("/api/quiet")
+def quiet_status(request: Request) -> dict:
+    """The home's active quiet window for the app countdown, or ``active=false``."""
+    engine = _engine(request)
+    now = engine.now()
+    window = engine.active_quiet_window(now=now)
+    if window is None:
+        return {"active": False, "window": None, "remaining_seconds": 0}
+    body = _quiet_json(window, now)
+    return {"active": True, "window": body, "remaining_seconds": body["remaining_seconds"]}
+
+
+@app.post("/api/quiet")
+def start_quiet(payload: dict, request: Request) -> dict:
+    """Open a resident quiet window. Body: ``{hours?, minutes?, seconds?, actor?,
+    source?, reason?, home_name?}`` (the app sends ``{"hours": 2}`` for the
+    one-tap "I'm fine for 2 hours"). Idempotent: a repeat while a window is
+    already active returns it with ``created=false`` (no stacking)."""
+    engine = _engine(request)
+    try:
+        duration = (
+            float(payload.get("hours") or 0) * 3600
+            + float(payload.get("minutes") or 0) * 60
+            + float(payload.get("seconds") or 0)
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="duration must be numeric") from exc
+    if duration <= 0:
+        raise HTTPException(
+            status_code=422, detail="a positive hours/minutes/seconds duration is required"
+        )
+    now = engine.now()
+    try:
+        window, created = engine.start_quiet(
+            duration,
+            actor=payload.get("actor") or "resident",
+            source=payload.get("source") or "app",
+            reason=payload.get("reason"),
+            home_name=payload.get("home_name"),
+            now=now,
+        )
+    except CascadeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    body = _quiet_json(window, now)
+    body["created"] = created
+    return body
+
+
+@app.post("/api/quiet/cancel")
+def cancel_quiet(payload: dict, request: Request) -> dict:
+    """Cancel the active quiet window early (resident/caregiver "cancel" tap)."""
+    engine = _engine(request)
+    now = engine.now()
+    window = engine.cancel_quiet(by=(payload or {}).get("by"), now=now)
+    if window is None:
+        return {"canceled": False, "window": None}
+    return {"canceled": True, "window": _quiet_json(window, now)}
 
 
 # -- caregiver read API (BAT-25) --------------------------------------------

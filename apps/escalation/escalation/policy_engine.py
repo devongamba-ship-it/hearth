@@ -21,6 +21,7 @@ now simply the ``fall.confirmed`` policy instance.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -57,6 +58,16 @@ DISPOSITIONS = (
 # Non-paging channels used by digest/ops actions — recorded, never a page.
 CH_DIGEST = "digest"
 CH_OPS = "ops"
+
+# Resident quiet window (BAT-39). A window cannot run longer than this — a
+# resident "I'm OK" must lapse and re-arm wellness alerting; it is a pause, not
+# an off-switch. Fall (P1) pages regardless, always.
+MAX_QUIET_SECS = 24 * 60 * 60
+# Priority that a resident quiet window may NEVER suppress. fall.confirmed is P1;
+# any future critical type sharing P1 is protected by the same rule.
+NEVER_SUPPRESS_PRIORITY = "P1"
+
+logger = logging.getLogger("hearth.escalation")
 
 Clock = Callable[[], float]
 
@@ -185,6 +196,28 @@ class PolicyEngine:
             )
             self._log(session, incident.id, "incident_created", created_detail,
                       at=now, priority=policy.priority, actor="system")
+
+            # Resident quiet window (BAT-39): a non-fall alert raised while the
+            # resident has said "I'm OK" is recorded for the audit/digest but
+            # never pages. fall.confirmed (P1) is never suppressed — a real fall
+            # always pages, quiet window or not.
+            quiet = (self._active_quiet_window(session, home, now)
+                     if self._suppressible(policy) else None)
+            if quiet is not None:
+                incident.status = db.SUPPRESSED
+                incident.resolved_at = now
+                self._log(session, incident.id, "suppressed_resident_quiet",
+                          f"{type_} suppressed by resident quiet window "
+                          f"(set by {quiet.actor}, until {quiet.ends_at})",
+                          at=now, priority=policy.priority, actor=quiet.actor,
+                          channel="quiet")
+                logger.info("suppressed %s during resident quiet window", type_,
+                            extra={"event": "quiet_suppressed", "type": type_,
+                                   "home": home, "quiet_window_id": quiet.id})
+                session.commit()
+                session.refresh(incident)
+                session.expunge(incident)
+                return incident, True
 
             # Run every immediate (at_secs == 0) step now, then schedule the rest.
             idx = 0
@@ -605,6 +638,108 @@ class PolicyEngine:
         if incident_id is None:
             return None
         return self.signal_clear(incident_id, now=now)
+
+    # -- resident quiet window (BAT-39) -------------------------------------
+
+    @staticmethod
+    def _suppressible(policy: Policy) -> bool:
+        """Whether a resident quiet window may suppress this type.
+
+        Two guards: never P1 (``fall.confirmed`` always pages), and ONLY
+        wellness nudges — the spec scopes the window to "non-fall *wellness*
+        alerts". A ``system.*`` health alert (e.g. ``system.sensing_gap``) must
+        still reach the caregiver: if sensing drops during a window that can
+        run up to 24h, a fall can't be detected at all, so silencing "we've
+        lost sensing" would be a monitoring blind spot, not a nuisance mute.
+        """
+        return (policy.priority != NEVER_SUPPRESS_PRIORITY
+                and policy.type.startswith("wellness."))
+
+    def _active_quiet_window(self, session, home: str, now: float) -> db.QuietWindow | None:
+        """The home's quiet window in force at ``now`` (un-canceled, un-lapsed)."""
+        from sqlalchemy import select
+
+        return session.scalars(
+            select(db.QuietWindow)
+            .where(db.QuietWindow.home_name == home)
+            .where(db.QuietWindow.canceled_at.is_(None))
+            .where(db.QuietWindow.started_at <= now)
+            .where(db.QuietWindow.ends_at > now)
+            .order_by(db.QuietWindow.ends_at.desc())
+        ).first()
+
+    def active_quiet_window(self, home_name: str | None = None,
+                            now: float | None = None) -> db.QuietWindow | None:
+        """The active quiet window for the home, or None. Auto-expiry is implicit:
+        a window past its ``ends_at`` simply stops matching (no timer needed)."""
+        now = self.now() if now is None else now
+        home = home_name or self._config.home_name
+        with self._sessions() as session:
+            window = self._active_quiet_window(session, home, now)
+            if window is not None:
+                session.expunge(window)
+            return window
+
+    def start_quiet(self, duration_secs: float, *, actor: str = "resident",
+                    source: str = "app", reason: str | None = None,
+                    home_name: str | None = None,
+                    now: float | None = None) -> tuple[db.QuietWindow, bool]:
+        """Open a resident quiet window of ``duration_secs``.
+
+        Idempotent: if a window is already active for the home this is a no-op
+        that returns it (``created=False``) — repeated "I'm OK" taps (or a
+        hardware button bouncing) never stack overlapping windows. Returns
+        ``(window, created)``.
+        """
+        if duration_secs <= 0:
+            raise CascadeError("quiet window duration must be positive")
+        duration_secs = min(float(duration_secs), MAX_QUIET_SECS)
+        now = self.now() if now is None else now
+        home = home_name or self._config.home_name
+        with self._raise_lock, self._sessions() as session:
+            existing = self._active_quiet_window(session, home, now)
+            if existing is not None:
+                session.expunge(existing)
+                return existing, False
+            window = db.QuietWindow(
+                id=uuid.uuid4().hex,
+                home_name=home,
+                started_at=now,
+                ends_at=now + duration_secs,
+                actor=actor or "resident",
+                source=source or "app",
+                reason=reason,
+            )
+            session.add(window)
+            session.commit()
+            session.refresh(window)
+            session.expunge(window)
+        mins = int(duration_secs // 60)
+        logger.info("resident quiet window opened for %dm by %s (%s)", mins, actor,
+                    source, extra={"event": "quiet_window_started", "home": home,
+                                   "actor": actor, "source": source,
+                                   "duration_secs": duration_secs})
+        return window, True
+
+    def cancel_quiet(self, *, by: str | None = None, home_name: str | None = None,
+                     now: float | None = None) -> db.QuietWindow | None:
+        """Cancel the home's active quiet window early (resident/caregiver tap).
+        Returns the canceled window, or None if none was active."""
+        now = self.now() if now is None else now
+        home = home_name or self._config.home_name
+        with self._sessions() as session:
+            window = self._active_quiet_window(session, home, now)
+            if window is None:
+                return None
+            window.canceled_at = now
+            window.canceled_by = by or "resident"
+            session.commit()
+            session.refresh(window)
+            session.expunge(window)
+        logger.info("resident quiet window canceled by %s", window.canceled_by,
+                    extra={"event": "quiet_window_canceled", "home": home,
+                           "actor": window.canceled_by})
+        return window
 
     # -- resolve / disposition ----------------------------------------------
 

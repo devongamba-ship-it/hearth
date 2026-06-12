@@ -79,9 +79,57 @@ rejected unless their `X-Twilio-Signature` validates.
 - `POST /escalate` — legacy fall entry (see above).
 - `GET  /api/incidents`, `/api/incidents/active`, `/api/incidents/{id}` —
   caregiver read API (BAT-25).
+- `POST /api/quiet`, `GET /api/quiet`, `POST /api/quiet/cancel` — resident
+  "I'm OK / pause" quiet window (BAT-39, see below).
 - `POST /admin/process-due` — drive persisted timers (local poller/cron).
 - `POST /webhooks/twilio/sms`, `POST /webhooks/twilio/voice` — ack/claim
   callbacks (signature-validated).
+
+## Resident "I'm OK / pause" quiet window (BAT-39)
+
+A resident-initiated quiet window suppresses **non-fall wellness alerts** for a
+set duration — the antidote to alert fatigue. The safety invariant is
+non-negotiable: **`fall.confirmed` (P1) is never suppressed** — a real fall
+always pages, quiet window or not. (The rule is "never suppress P1," so any
+future critical type at P1 is protected by the same gate.)
+
+A wellness incident raised while a window is active is **recorded** (status
+`suppressed`, a terminal state, with a `suppressed_resident_quiet` audit event
+for the digest / training set) but **never paged**. The window **auto-expires**
+at `ends_at` with no timer — expiry is simply the clock passing `ends_at`. The
+`quiet_windows` row is the audit record: start, end, actor, source, any cancel.
+A window already-open incident keeps its ladder (the resident can snooze/claim
+it); the window only gates *newly-raised* alerts. Windows are capped at 24h.
+
+```
+POST /api/quiet      { "hours": 2 }                 # one-tap "I'm fine for 2 hours"
+POST /api/quiet      { "minutes": 90, "actor": "Mom" }
+GET  /api/quiet      -> { "active", "window", "remaining_seconds" }   # app countdown
+POST /api/quiet/cancel  { "by": "Dana" }            # resume alerting early
+```
+
+`POST /api/quiet` is **idempotent**: a repeat while a window is active returns the
+current one (`created: false`) — taps never stack overlapping windows.
+
+### Hardware-button plug point
+
+A future physical "I'm OK" button (ESP32 / BLE bridge) POSTs the **exact same**
+`POST /api/quiet` body, distinguished only by `"source": "button"`:
+
+```
+POST /api/quiet   { "minutes": 120, "actor": "resident", "source": "button" }
+```
+
+No separate endpoint or code path — the button is just another caller of the
+window API. Contract for the firmware/bridge author:
+- Body is JSON; `source` should be `"button"` so the audit log distinguishes a
+  hardware press from an app tap. `actor` defaults to `"resident"`.
+- The call is idempotent, so a bouncing button or a double-press is safe.
+- The button can only *open* (or refresh) a window; **cancel is app-only**
+  (`POST /api/quiet/cancel`) so a stray press can't silently re-enable alerting.
+- Auth is out of scope for v1 (the service is on the home LAN, same trust
+  boundary as the ingest UDP listener); a future revision should require a
+  per-home shared secret on this endpoint before any off-LAN exposure.
 
 ## Develop
 

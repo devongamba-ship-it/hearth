@@ -165,6 +165,29 @@ h1, h2, h3 { line-height: 1.2; }
 .btn--claim:disabled { opacity: 0.6; cursor: progress; }
 .btn--ghost { background: none; border-color: var(--line); color: var(--ink); margin-bottom: 8px; }
 
+/* Resident "I'm OK / pause" quiet window (BAT-39). */
+.btn--quiet {
+  width: 100%;
+  background: none;
+  border-color: var(--line);
+  color: var(--ink);
+  text-align: center;
+}
+.btn--quiet:disabled, .btn--quiet-cancel:disabled { opacity: 0.6; cursor: progress; }
+.btn--quiet-cancel { margin-top: 14px; background: none; border-color: var(--line); color: var(--ink); }
+
+.quiet {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  text-align: center;
+}
+.quiet--on { background: #f4efe6; }
+.quiet__headline { margin: 0 0 6px; font-size: 1.2rem; }
+.quiet__countdown { margin: 0 0 6px; font-size: 1.6rem; font-weight: 800; }
+.quiet__note { margin: 8px 0 0; color: var(--ink-soft); font-size: 0.9rem; }
+
 /* -- generic screens ------------------------------------------------------ */
 
 .screen h2 { font-size: 1.5rem; margin: 12px 0; }

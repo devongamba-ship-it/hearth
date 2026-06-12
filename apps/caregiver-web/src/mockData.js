@@ -26,6 +26,9 @@ export const mockStatus = {
 
 export const mockActiveIncidents = [];
 
+// No resident quiet window active by default (BAT-39).
+export const mockQuietStatus = { active: false, window: null, remaining_seconds: 0 };
+
 export const mockFallIncidents = [
   {
     incident_id: "fall-demo-1",

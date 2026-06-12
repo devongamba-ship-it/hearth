@@ -9,8 +9,16 @@
 // escalation /api/incidents/active every few seconds and composes them.
 
 import { useCallback, useEffect, useState } from "react";
-import { claimIncident, getActiveIncidents, getStatus } from "./api.js";
+import {
+  cancelQuiet,
+  claimIncident,
+  getActiveIncidents,
+  getQuietStatus,
+  getStatus,
+  startQuiet,
+} from "./api.js";
 import StatusCard from "./components/StatusCard.jsx";
+import QuietControl from "./components/QuietControl.jsx";
 import ActivityScreen from "./components/ActivityScreen.jsx";
 import AlertsScreen from "./components/AlertsScreen.jsx";
 import CareCircle from "./components/CareCircle.jsx";
@@ -30,13 +38,19 @@ const TABS = [
 function useStatusPolling() {
   const [status, setStatus] = useState(null);
   const [incidents, setIncidents] = useState([]);
+  const [quiet, setQuiet] = useState({ active: false, remaining_seconds: 0 });
   const [error, setError] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [s, inc] = await Promise.all([getStatus(), getActiveIncidents()]);
+      const [s, inc, q] = await Promise.all([
+        getStatus(),
+        getActiveIncidents(),
+        getQuietStatus(),
+      ]);
       setStatus(s);
       setIncidents(inc.incidents || []);
+      setQuiet(q);
       setError(null);
     } catch (e) {
       setError(e.message || "offline");
@@ -49,12 +63,12 @@ function useStatusPolling() {
     return () => clearInterval(id);
   }, [refresh]);
 
-  return { status, incidents, error, refresh };
+  return { status, incidents, quiet, error, refresh };
 }
 
 export default function App() {
   const [tab, setTab] = useState("home");
-  const { status, incidents, error, refresh } = useStatusPolling();
+  const { status, incidents, quiet, error, refresh } = useStatusPolling();
 
   const handleClaim = useCallback(
     async (incidentId) => {
@@ -63,6 +77,19 @@ export default function App() {
     },
     [refresh],
   );
+
+  const handleStartQuiet = useCallback(
+    async (hours) => {
+      await startQuiet({ hours, actor: "You" });
+      await refresh();
+    },
+    [refresh],
+  );
+
+  const handleCancelQuiet = useCallback(async () => {
+    await cancelQuiet("You");
+    await refresh();
+  }, [refresh]);
 
   return (
     <div className="app">
@@ -76,7 +103,14 @@ export default function App() {
           <p className="banner" role="status">Reconnecting to the home… ({error})</p>
         )}
         {tab === "home" && (
-          <StatusCard status={status} activeIncidents={incidents} onClaim={handleClaim} />
+          <>
+            <StatusCard status={status} activeIncidents={incidents} onClaim={handleClaim} />
+            <QuietControl
+              quiet={quiet}
+              onStart={handleStartQuiet}
+              onCancel={handleCancelQuiet}
+            />
+          </>
         )}
         {tab === "activity" && <ActivityScreen homeId={HOME_ID} />}
         {tab === "alerts" && <AlertsScreen />}

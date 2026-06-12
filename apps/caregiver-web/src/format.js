@@ -18,6 +18,19 @@ export function offset(fromEpoch, toEpoch) {
   return m > 0 ? `+${m}m ${s}s` : `+${s}s`;
 }
 
+// A countdown duration in seconds → a coarse "1h 29m" / "29m" / "45s" label for
+// the resident quiet-window timer (BAT-39). Rounds up so a live countdown never
+// flashes "0m" while still running.
+export function remaining(seconds) {
+  const secs = Math.max(0, Math.round(seconds || 0));
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.ceil(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${h}h ${m}m`;
+}
+
 // Human label for a fall-machine state.
 const STATE_LABEL = {
   NORMAL: "Normal",
