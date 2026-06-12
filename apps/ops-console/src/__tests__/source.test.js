@@ -44,6 +44,28 @@ describe("deriveSourceBadge (BAT-34)", () => {
     expect(badge.label).toBe("live · 1 node");
   });
 
+  it("counts reporting NODES from the frame, not the track/person count", () => {
+    // Empty home, all 4 nodes healthy: 0 tracks but the floor is live · 4 nodes.
+    const badge = deriveSourceBadge({
+      connected: true,
+      frame: frame({ tracks: [], nodes_reporting: 4 }),
+    });
+    expect(badge).toMatchObject({ kind: "live", label: "live · 4 nodes" });
+  });
+
+  it("stays `degraded` for a SUSTAINED outage via the frame's nodes_offline", () => {
+    // The badge reads the authoritative offline set on every frame, so a node
+    // that stays down keeps the badge degraded tick after tick (the bug was it
+    // flickering back to live after the one-shot dropout event).
+    for (const ts of [1001, 1010, 1060]) {
+      const badge = deriveSourceBadge({
+        connected: true,
+        frame: frame({ ts, nodes_offline: [3], nodes_reporting: 3 }),
+      });
+      expect(badge).toMatchObject({ kind: "degraded", label: "degraded · 1 offline" });
+    }
+  });
+
   it("reads `degraded · N offline` when a node has gone silent", () => {
     const badge = deriveSourceBadge({ connected: true, frame: frame(), offlineCount: 2 });
     expect(badge.kind).toBe("degraded");

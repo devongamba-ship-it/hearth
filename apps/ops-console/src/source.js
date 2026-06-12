@@ -44,18 +44,24 @@ export function deriveSourceBadge({ connected, frame, offlineCount = 0 } = {}) {
     return { kind: "simulated", label: "simulated" };
   }
 
-  // Live floor: a low-confidence (tracking_degraded) frame or any node that has
-  // gone silent >10s (uncleared sensing_dropout) drops the badge to degraded.
-  const degraded = Boolean(frame.tracking_degraded) || offlineCount > 0;
+  // Live floor: a low-confidence (tracking_degraded) frame or any node currently
+  // silent >10s drops the badge to degraded. Offline count comes from the
+  // frame's authoritative nodes_offline (persists for the whole outage), falling
+  // back to the client-reconstructed offlineCount only for older feeds.
+  const offline = Array.isArray(frame.nodes_offline)
+    ? frame.nodes_offline.length
+    : offlineCount;
+  const degraded = Boolean(frame.tracking_degraded) || offline > 0;
   if (degraded) {
-    return offlineCount > 0
-      ? { kind: "degraded", label: `degraded · ${offlineCount} offline`, offlineCount }
+    return offline > 0
+      ? { kind: "degraded", label: `degraded · ${offline} offline`, offlineCount: offline }
       : { kind: "degraded", label: "degraded" };
   }
 
-  // Healthy live floor. N is the count of reporting nodes; the aggregated frame
-  // exposes anonymous tracks (never node-level detail — privacy), so the badge
-  // derives N from the track count, the per-target signal the feed provides.
+  // Healthy live floor. N = the count of reporting SENSORS (nodes), which the
+  // backend stamps on the frame — NOT the track/person count (an empty home has
+  // 0 tracks but its nodes are still live). A coarse node count is aggregate,
+  // not node-level detail, so the privacy envelope holds.
   const nodeCount = nodesReporting(frame);
   return {
     kind: "live",
@@ -65,8 +71,9 @@ export function deriveSourceBadge({ connected, frame, offlineCount = 0 } = {}) {
 }
 
 function nodesReporting(frame) {
-  if (typeof frame.nodeCount === "number") return frame.nodeCount;
-  return Array.isArray(frame.tracks) ? frame.tracks.length : 0;
+  if (typeof frame.nodes_reporting === "number") return frame.nodes_reporting;
+  if (typeof frame.nodeCount === "number") return frame.nodeCount;  // legacy
+  return Array.isArray(frame.tracks) ? frame.tracks.length : 0;     // oldest feeds
 }
 
 /**

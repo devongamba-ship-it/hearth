@@ -221,6 +221,33 @@ def test_dropout_not_repeated_then_clears_on_recovery(session_factory):
     assert len(_events(feed.tick(), "sensing_dropout")) == 1
 
 
+def test_frame_carries_authoritative_node_health(session_factory):
+    """BAT-34 review: the badge can't be reconstructed from the one-shot
+    sensing_dropout event. Every frame must carry nodes_reporting + nodes_offline
+    so a sustained outage stays flagged for its whole duration."""
+    clock = FakeClock(0)
+    feed = _feed(session_factory, clock)
+    _persist(session_factory, 1, ts=1000)
+    frame = _frame(feed.tick())
+    assert frame["nodes_reporting"] == 1
+    assert frame["nodes_offline"] == []
+
+    # Node 1 goes silent and STAYS silent: offline must persist across ticks,
+    # not flicker back after the single dropout event.
+    for t in (11, 12, 20, 60):
+        clock.t = t
+        frame = _frame(feed.tick())
+        assert frame["nodes_offline"] == [1], f"flickered back at t={t}"
+        assert frame["nodes_reporting"] == 0
+
+    # A fresh packet clears it — the real recovery signal.
+    _persist(session_factory, 1, ts=2000)
+    clock.t = 61
+    frame = _frame(feed.tick())
+    assert frame["nodes_offline"] == []
+    assert frame["nodes_reporting"] == 1
+
+
 # -- ticker events: room transition + dwell ----------------------------------
 
 

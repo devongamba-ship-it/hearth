@@ -236,6 +236,14 @@ class LiveFeed:
 
         rooms, tracks, degraded = self._aggregate(node_states)
         messages.extend(self._resident_events(tracks, now))
+        # Authoritative node-health on every frame (BAT-34 review): the badge
+        # must reflect a sustained outage for as long as it lasts, not be
+        # reconstructed client-side from the one-shot sensing_dropout event.
+        # nodes_reporting = the spec's "N nodes" (sensors seen and not dropped),
+        # NOT the track/person count. nodes_offline clears exactly when the
+        # backend clears _dropped on a fresh packet — the real recovery signal.
+        offline = sorted(self._dropped)
+        reporting = sum(1 for n in self._last_seen_at if n not in self._dropped)
         messages.append({
             "type": "room_activity",
             "home_id": self.home_id,
@@ -244,6 +252,8 @@ class LiveFeed:
             "rooms": rooms,
             "tracks": tracks,
             "tracking_degraded": degraded,
+            "nodes_reporting": reporting,
+            "nodes_offline": offline,
         })
         messages.extend(self._incident_events(new_txns))
         return messages
