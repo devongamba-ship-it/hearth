@@ -39,15 +39,19 @@ Consumes the BAT-27 endpoints on the ingest service:
   square), mesh links, resident track config. Drawn once.
 - `WS /homes/{id}/live` — 1 Hz `room_activity` (per-room activity/occupancy +
   a `tracks` array), `event`, and `incident` frames (v0.2 track-array shape).
+  Each track may carry optional coarse vitals estimates
+  (`respiration_bpm_estimate`, `posture_estimate`; BAT-33).
 
 Position is interpolated **client-side** between the 1 Hz frames, so figures
 glide rather than teleport.
 
 ## Privacy
 
-The live feed exposes aggregates only. **Respiration and posture are not emitted
-by it** — the HUD shows them as "—" rather than fabricating a vital sign. Motion
-is the activity index the feed actually provides, and the resident track is
+The live feed exposes aggregates only. **Respiration and posture are coarse,
+smoothed _estimates_** (BAT-33) the feed attaches to the resident track — still
+aggregates, never raw or per-second readings. They are optional: when the feed
+omits them (confidence too low) the HUD shows "—" rather than fabricating a vital
+sign. Motion is the activity index the feed provides, and the resident track is
 anonymous (label, not identity).
 
 ## Run it

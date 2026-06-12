@@ -7,13 +7,39 @@ WebSocket. The thin async WS driver is covered in test_live_ws.py.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+from pathlib import Path
 
 from hearth.packet import Vitals
 from ingest.db import FallTransition
+from ingest.detection import DetectionConfig
+from ingest.escalator import NullEscalator
+from ingest.fall_machine import FallMachine, Frame, State
 from ingest.layout import load_layout_from_text
 from ingest.listener import persist
-from ingest.live import DROPOUT_SECS, DWELL_SECS, LiveFeed, activity_index
+from ingest.live import (
+    DROPOUT_SECS,
+    DWELL_SECS,
+    RESP_MIN_SAMPLES,
+    LiveFeed,
+    activity_index,
+    posture_estimate,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _load_sim():
+    spec = importlib.util.spec_from_file_location(
+        "packet_sim", REPO_ROOT / "tools" / "packet_sim.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+SIM = _load_sim()
 
 LAYOUT_YAML = """
 home_id: rosewood
@@ -44,10 +70,10 @@ class FakeClock:
 
 
 def _persist(sf, node_id, *, motion=2000.0, ts=1000, presence=True,
-             occupancy=1, confidence=0.9, fall=False):
+             occupancy=1, confidence=0.9, fall=False, breath=15.0):
     persist(sf, Vitals(
         node_id=node_id, presence=presence, fall=fall,
-        motion=motion > 200, breathing_bpm=15.0, heart_bpm=72.0, rssi=-55,
+        motion=motion > 200, breathing_bpm=breath, heart_bpm=72.0, rssi=-55,
         occupancy=occupancy, motion_energy=float(motion),
         presence_score=confidence, timestamp_ms=ts,
     ))
@@ -63,6 +89,30 @@ def _frame(messages):
 
 def _events(messages, name):
     return [m for m in messages if m.get("type") == "event" and m.get("event") == name]
+
+
+def _resident(messages):
+    """The resident (track 'A') object from a tick's room_activity frame."""
+    return next(t for t in _frame(messages)["tracks"] if t["track_id"] == "A")
+
+
+def _drive_sim(feed, sf, scenario, ticks, *, node_id=1, machine=None):
+    """Replay `ticks` of a real packet_sim scenario at 1 Hz into the feed.
+
+    One persisted reading per simulated second, ticking the feed each time, so
+    the rolling windows fill exactly as they would against the live listener. If
+    a `machine` is given, every frame is also stepped through the fall machine
+    (which persists its transitions to the same DB), so the feed picks up the
+    real fall-state cascade. Returns the final tick's messages.
+    """
+    messages: list = []
+    for t, f in zip(range(ticks), SIM.frames(scenario)):
+        vitals = SIM.frame_to_vitals(node_id, t * 1000, f)
+        persist(sf, vitals)
+        if machine is not None:
+            machine.step(Frame.from_vitals(vitals))
+        messages = feed.tick()
+    return messages
 
 
 # -- activity index + room_activity frame -----------------------------------
@@ -276,6 +326,77 @@ def test_no_room_transition_on_connect(session_factory):
     assert _events(feed.tick(), "room_transition") == []
 
 
+# -- coarse vitals estimates (BAT-33) ----------------------------------------
+
+
+def test_posture_unit_mapping():
+    # Fall watch dominates regardless of residual motion.
+    assert posture_estimate(5000.0, present=True, watch=True) == "floor"
+    assert posture_estimate(0.0, present=True, watch=True) == "floor"
+    # Present + sustained motion = upright; present + still = seated.
+    assert posture_estimate(2500.0, present=True, watch=False) == "upright"
+    assert posture_estimate(40.0, present=True, watch=False) == "seated"
+    # Nobody to classify.
+    assert posture_estimate(0.0, present=False, watch=False) == "unknown"
+
+
+def test_respiration_estimate_within_2bpm_after_smoothing_window(session_factory):
+    """AC#1: the packet_sim feed yields a respiration estimate within ±2 BPM of
+    the sim's configured breathing rate, once the smoothing window has filled."""
+    clock = FakeClock(0)
+    feed = _feed(session_factory, clock)
+
+    # Before the window warms up the estimate is withheld (not fabricated).
+    early = _drive_sim(feed, session_factory, "normal", ticks=RESP_MIN_SAMPLES - 1)
+    assert "respiration_bpm_estimate" not in _resident(early)
+
+    # After >= WINDOW_SECS samples it appears, rounded to an integer, within ±2
+    # BPM of the normal scenario's configured ~15 BPM (uniform 13-17).
+    later = _drive_sim(feed, session_factory, "normal", ticks=10)
+    resident = _resident(later)
+    resp = resident["respiration_bpm_estimate"]
+    assert isinstance(resp, int)
+    assert abs(resp - 15) <= 2
+
+
+def test_posture_upright_during_normal_scenario(session_factory):
+    """AC#2 (normal half): a moving resident reads as upright."""
+    feed = _feed(session_factory, FakeClock(0))
+    messages = _drive_sim(feed, session_factory, "normal", ticks=RESP_MIN_SAMPLES + 5)
+    assert _resident(messages)["posture_estimate"] == "upright"
+
+
+def test_posture_floor_during_fall_confirmed_scenario(session_factory):
+    """AC#2 (fall half): driving the real fall_confirmed scenario through the
+    fall machine drives the resident's posture estimate to floor."""
+    feed = _feed(session_factory, FakeClock(0))
+    machine = FallMachine(
+        DetectionConfig(), escalator=NullEscalator(),
+        clock=lambda: 1_700_000_000.0, session_factory=session_factory,
+    )
+    # 110s reaches CONFIRMED_FALL (impact at t=30, 45s check-in window after).
+    messages = _drive_sim(
+        feed, session_factory, "fall_confirmed", ticks=110, machine=machine
+    )
+    assert machine.state_of(1) is State.CONFIRMED_FALL
+    resident = _resident(messages)
+    assert resident["state"] == "fall_watch"
+    assert resident["posture_estimate"] == "floor"
+
+
+def test_vitals_absent_below_confidence_floor_but_track_still_placed(session_factory):
+    """Spec: a track can be placed (>= TRACK_CONF_MIN) while presence confidence
+    is too low to estimate vitals — then both estimates are simply absent."""
+    feed = _feed(session_factory, FakeClock(0))
+    # 0.45 is above TRACK_CONF_MIN (0.4) but below VITALS_CONF_MIN (0.5).
+    for t in range(RESP_MIN_SAMPLES + 5):
+        _persist(session_factory, 1, motion=2500, confidence=0.45, ts=1000 + t)
+        messages = feed.tick()
+    resident = _resident(messages)
+    assert "respiration_bpm_estimate" not in resident
+    assert "posture_estimate" not in resident
+
+
 # -- privacy invariant -------------------------------------------------------
 
 
@@ -289,3 +410,25 @@ def test_frame_carries_no_raw_readings(session_factory):
                       "fall_flag"):
         assert forbidden not in blob
     assert "3000" not in blob  # the raw motion-energy value never appears
+
+
+def test_respiration_estimate_is_smoothed_never_a_raw_reading(session_factory):
+    """AC#4: the coarse respiration estimate is a rounded, smoothed aggregate —
+    the raw per-second breathing value never appears in the frame."""
+    clock = FakeClock(0)
+    feed = _feed(session_factory, clock)
+    # A distinctive raw breathing rate that must NOT leak verbatim.
+    for t in range(RESP_MIN_SAMPLES + 2):
+        _persist(session_factory, 1, motion=2500, confidence=0.9,
+                 breath=15.37, ts=1000 + t)
+        messages = feed.tick()
+    frame = _frame(messages)
+    resident = _resident(messages)
+
+    assert resident["respiration_bpm_estimate"] == 15  # rounded, integer
+    blob = json.dumps(frame)
+    assert "15.37" not in blob  # the raw breathing value never appears
+    # Raw reading field names still never leave the home.
+    for forbidden in ("motion_energy", "breathing", "breathing_bpm", "hr_bpm",
+                      "presence_score", "fall_flag"):
+        assert forbidden not in blob

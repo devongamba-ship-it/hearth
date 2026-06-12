@@ -1,8 +1,11 @@
 // Pure track → figure mapping (BAT-29, canonical design update v0.2).
 //
 // The live feed (BAT-27) emits a `tracks` array of anonymous motion targets:
-//   { track_id, label, room, confidence, identity_confidence, state }
-// where state ∈ {"normal","fall_watch","guest"}. This module turns that array
+//   { track_id, label, room, confidence, identity_confidence, state,
+//     respiration_bpm_estimate?, posture_estimate? }
+// where state ∈ {"normal","fall_watch","guest"} and the two vitals estimates
+// are optional (BAT-33; absent when confidence is too low). This module turns
+// that array
 // into render-ready *figures*: a world position (anchored on the track's room,
 // offset into a deterministic non-intersecting slot when a room holds several
 // tracks), a colour + ID tag, a halo, and a fall flag. It is pure: no Three.js.
@@ -92,6 +95,10 @@ export function tracksToFigures(tracks, scene) {
         baseColor: trackColor(t),
         confidence: t.confidence ?? 0,
         identityConfidence: t.identity_confidence ?? 0,
+        // Optional coarse vitals estimates (BAT-33). Absent → null, never
+        // fabricated; the HUD renders "—" for a null.
+        respiration: t.respiration_bpm_estimate ?? null,
+        posture: t.posture_estimate ?? null,
         guest: t.state === "guest",
         state: t.state ?? "normal",
         fallen,
