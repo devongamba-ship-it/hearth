@@ -43,34 +43,41 @@ SIM_RSSI = -55
 MOTION_FLAG_THRESHOLD = 200.0
 
 
-def frames(scenario: str):
-    """Yield one frame dict per simulated second, forever or until done."""
+def frames(scenario: str, rng: random.Random | None = None):
+    """Yield one frame dict per simulated second, forever or until done.
+
+    ``rng`` is the source of the per-frame jitter. Pass a seeded
+    ``random.Random`` for a byte-for-byte reproducible run — the demo player
+    (BAT-43) does this so a screen recording looks identical every take. With no
+    rng it uses the process-global ``random`` (the historical behaviour).
+    """
+    rng = rng or random
     t = 0
     while True:
         if scenario == "empty":
-            yield dict(presence=0, fall=0, motion=random.randint(0, 40),
+            yield dict(presence=0, fall=0, motion=rng.randint(0, 40),
                        breath=0, hr=0, conf_p=92, conf_v=0, occ=0)
         elif scenario == "normal":
             yield dict(presence=1, fall=0,
-                       motion=random.randint(800, 4000),
-                       breath=random.uniform(13, 17), hr=random.uniform(62, 78),
+                       motion=rng.randint(800, 4000),
+                       breath=rng.uniform(13, 17), hr=rng.uniform(62, 78),
                        conf_p=90, conf_v=70, occ=1)
         elif scenario == "quiet_morning":
-            yield dict(presence=1, fall=0, motion=random.randint(20, 120),
-                       breath=random.uniform(11, 14), hr=random.uniform(55, 65),
+            yield dict(presence=1, fall=0, motion=rng.randint(20, 120),
+                       breath=rng.uniform(11, 14), hr=rng.uniform(55, 65),
                        conf_p=88, conf_v=72, occ=1)
         elif scenario in ("fall_confirmed", "fall_recovered"):
             if t < 30:        # normal activity
-                yield dict(presence=1, fall=0, motion=random.randint(800, 4000),
+                yield dict(presence=1, fall=0, motion=rng.randint(800, 4000),
                            breath=15, hr=72, conf_p=90, conf_v=70, occ=1)
             elif t == 30:     # impact
                 yield dict(presence=1, fall=1, motion=9500,
                            breath=18, hr=95, conf_p=90, conf_v=60, occ=1)
             elif scenario == "fall_confirmed":   # sustained stillness
-                yield dict(presence=1, fall=0, motion=random.randint(5, 60),
+                yield dict(presence=1, fall=0, motion=rng.randint(5, 60),
                            breath=14, hr=88, conf_p=85, conf_v=65, occ=1)
             else:             # fall_recovered: gets back up after ~10s
-                m = random.randint(5, 60) if t < 40 else random.randint(900, 3500)
+                m = rng.randint(5, 60) if t < 40 else rng.randint(900, 3500)
                 yield dict(presence=1, fall=0, motion=m,
                            breath=15, hr=80, conf_p=90, conf_v=70, occ=1)
         else:
@@ -111,13 +118,17 @@ def main() -> None:
                     help="time multiplier (10 = 10x faster than real time)")
     ap.add_argument("--duration", type=int, default=0,
                     help="seconds of simulated time (0 = run forever)")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="seed the per-frame jitter for a reproducible run")
     args = ap.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     uptime = 0
+    rng = random.Random(args.seed) if args.seed is not None else None
     print(f"[sim] scenario={args.scenario} -> {args.target}:{args.port} "
-          f"node={args.node_id} speed={args.speed}x magic={MAGIC:#010x}")
-    for i, f in enumerate(frames(args.scenario)):
+          f"node={args.node_id} speed={args.speed}x "
+          f"seed={args.seed} magic={MAGIC:#010x}")
+    for i, f in enumerate(frames(args.scenario, rng)):
         pkt = encode(frame_to_vitals(args.node_id, uptime, f))
         sock.sendto(pkt, (args.target, args.port))
         if f["fall"]:

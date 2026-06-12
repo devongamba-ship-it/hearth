@@ -34,9 +34,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
 
-from . import __version__, caregiver, digest as digest_mod
+from pydantic import BaseModel
+
+from . import __version__, caregiver, demo as demo_mod, digest as digest_mod
 from .db import CONFIRMED_FALL, FallTransition, Reading, init_db, make_engine, make_session_factory
 from .detection import load_config
+from .escalator import HttpEscalator
 from .health import build_health
 from .health import home_id as resolve_home_id
 from .layout import HomeLayout, load_layout
@@ -69,6 +72,19 @@ def _config(request: Request):
     """Detection config (rooms, quiet hours, thresholds). Tests may override."""
     override = getattr(request.app.state, "detection_config", None)
     return override if override is not None else load_config()
+
+
+def _demo_enabled(scope) -> bool:
+    """Whether demo mode (BAT-43) is on. ``scope`` is a Request or WebSocket.
+
+    An ``app.state.demo_enabled`` override wins (tests set it); otherwise the
+    ``HEARTH_DEMO`` env var. Off by default so the demo endpoints never exist on
+    a production box unless a human turns them on.
+    """
+    override = getattr(scope.app.state, "demo_enabled", None)
+    if override is not None:
+        return bool(override)
+    return demo_mod.is_enabled()
 
 
 def _session_factory(request: Request):
@@ -352,7 +368,15 @@ def _build_live_feed(websocket: WebSocket, home_id: str) -> LiveFeed:
     # Data-source label (BAT-34): an app.state override (tests set this) else the
     # operator-set HEARTH_SOURCE env. Defaults to "live" — real silicon is the
     # production case; the operator flips HEARTH_SOURCE=simulated for sim runs.
-    source = getattr(websocket.app.state, "source", None) or os.environ.get("HEARTH_SOURCE")
+    # Demo mode (BAT-43) HARD-OVERRIDES to "simulated": when the service is
+    # playing a demo, every frame it emits is fabricated, so an operator's stale
+    # HEARTH_SOURCE=live must not be able to badge simulated data as live silicon
+    # (AC3: "never confusable with live"; privacy is the brand).
+    if _demo_enabled(websocket):
+        source = "simulated"
+    else:
+        source = (getattr(websocket.app.state, "source", None)
+                  or os.environ.get("HEARTH_SOURCE"))
     return LiveFeed(
         factory, layout, home_id=home_id, source=resolve_source(source), clock=clock
     )
@@ -373,6 +397,120 @@ async def home_live(websocket: WebSocket, home_id: str) -> None:
             await asyncio.sleep(interval)
     except WebSocketDisconnect:
         return
+
+
+# -- BAT-43 demo mode: deterministic scenario player ------------------------
+
+
+class DemoPlayRequest(BaseModel):
+    """Body for ``POST /api/demo/play``."""
+
+    scenario: str
+    speed: float | None = None
+
+
+def _demo_guard(request: Request) -> None:
+    """404 unless demo mode is on — the endpoints simply do not exist otherwise."""
+    if not _demo_enabled(request):
+        raise HTTPException(status_code=404, detail="demo mode is not enabled")
+
+
+async def _stop_demo(app: FastAPI) -> None:
+    """Cancel any in-flight playout and await it before returning.
+
+    Awaiting the cancelled task closes a race: cancellation is cooperative (it
+    lands at the next ``await`` inside ``play_async``), so without the await a
+    superseding play could start while the old playout writes one more ``step``
+    — duplicate readings. Runs on the event loop (callers are ``async``).
+    """
+    player = getattr(app.state, "demo_player", None)
+    if player is not None:
+        player.cancel()
+    task = getattr(app.state, "demo_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    app.state.demo_task = None
+    app.state.demo_task = None
+
+
+def _demo_status_body(request: Request) -> dict:
+    player = getattr(request.app.state, "demo_player", None)
+    return {
+        "enabled": True,
+        "playing": bool(player and player.active),
+        "scenario": player.scenario if player else None,
+        "scenarios": demo_mod.scenario_names(),
+        "home_id": demo_mod.DEMO_HOME,
+        "source": "simulated",
+    }
+
+
+@app.get("/api/demo/status")
+def demo_status(request: Request) -> dict:
+    """What the demo player is doing and which scenarios it offers (BAT-43)."""
+    _demo_guard(request)
+    return _demo_status_body(request)
+
+
+@app.post("/api/demo/play")
+async def demo_play(request: Request, body: DemoPlayRequest) -> dict:
+    """Play a deterministic scenario into the real pipeline (BAT-43).
+
+    Supersedes any scenario already playing. Returns immediately; the playout
+    runs at a fixed cadence so the WS-fed UIs animate. The escalation hand-off
+    uses the real :class:`HttpEscalator` (the local escalation service is itself
+    dry-run by default), so the ops queue lights up when that service is up.
+    """
+    _demo_guard(request)
+    if body.scenario not in demo_mod.DEMO_SCENARIOS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown scenario {body.scenario!r}; "
+            f"choose one of {demo_mod.scenario_names()}",
+        )
+    await _stop_demo(request.app)
+
+    factory = _session_factory(request)
+    escalator = getattr(request.app.state, "demo_escalator", None) or HttpEscalator()
+    player = demo_mod.ScenarioPlayer(
+        factory, body.scenario, escalator=escalator, config=_config(request)
+    )
+    request.app.state.demo_player = player
+    speed = body.speed or demo_mod.DEFAULT_SPEED
+
+    # Test hook: app.state.demo_runner runs the playout synchronously so endpoint
+    # tests are deterministic. In production we launch a background task.
+    runner = getattr(request.app.state, "demo_runner", None)
+    if runner is not None:
+        runner(player, speed)
+    else:
+        request.app.state.demo_task = asyncio.create_task(player.play_async(speed))
+
+    return {
+        "playing": True,
+        "scenario": body.scenario,
+        "duration": player.duration,
+        "speed": speed,
+        "source": "simulated",
+    }
+
+
+@app.post("/api/demo/reset")
+async def demo_reset(request: Request) -> dict:
+    """Stop any playout and wipe the ingest pipeline back to a clean slate (BAT-43).
+
+    Async so ``_stop_demo`` cancels the playout task on the event-loop thread —
+    cancelling an asyncio task from FastAPI's sync threadpool is not safe.
+    """
+    _demo_guard(request)
+    await _stop_demo(request.app)
+    request.app.state.demo_player = None
+    cleared = demo_mod.reset(_session_factory(request))
+    return {"playing": False, "reset": True, "cleared": cleared, "source": "simulated"}
 
 
 @app.get("/homes/{home_id}/trends")
