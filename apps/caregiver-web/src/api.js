@@ -92,6 +92,26 @@ export function claimIncident(incidentId, by) {
   return postJSON(`${ESCALATION}/incidents/${encodeURIComponent(incidentId)}/claim`, { by });
 }
 
+// Resident "I'm OK / pause" quiet window (BAT-39). Suppresses non-fall wellness
+// alerts for the window; a real fall always pages. GET drives the countdown.
+export function getQuietStatus() {
+  if (USE_MOCK) return Promise.resolve(mock.mockQuietStatus);
+  return getJSON(`${ESCALATION}/api/quiet`);
+}
+
+export function startQuiet({ hours, minutes, actor = "resident", source = "app" } = {}) {
+  if (USE_MOCK) {
+    const secs = (hours || 0) * 3600 + (minutes || 0) * 60;
+    return Promise.resolve({ created: true, remaining_seconds: secs, actor, source });
+  }
+  return postJSON(`${ESCALATION}/api/quiet`, { hours, minutes, actor, source });
+}
+
+export function cancelQuiet(by = "You") {
+  if (USE_MOCK) return Promise.resolve({ canceled: true });
+  return postJSON(`${ESCALATION}/api/quiet/cancel`, { by });
+}
+
 // Care circle has no persistence endpoint yet (BAT-31 owns the registry); the
 // app manages reorder locally and seeds from mock data.
 export function getCareCircle() {
