@@ -52,6 +52,20 @@ def test_quiet_window_suppresses_wellness_incident(engine, clock):
     assert _paged(engine) == []
 
 
+def test_system_health_alert_not_suppressed_by_quiet_window(engine, clock):
+    # PR #17 review: the window is scoped to *wellness* nudges. A system.* health
+    # alert (sensing dropped — a fall can't even be detected while it's down) must
+    # still reach the caregiver during a window, not be silently muted.
+    clock.set(T0)
+    engine.start_quiet(8 * 3600, actor="resident")
+
+    inc, created = engine.raise_incident("system.sensing_gap", room="home")
+    assert created is True
+    assert inc.status == db.ACTIVE  # NOT suppressed
+    assert "suppressed_resident_quiet" not in _kinds(engine, inc.id)
+    assert _paged(engine), "system.sensing_gap must still page during a quiet window"
+
+
 def test_fall_confirmed_never_suppressed_by_quiet_window(engine, clock):
     # The safety invariant. A real fall pages during a resident quiet window.
     clock.set(T0)

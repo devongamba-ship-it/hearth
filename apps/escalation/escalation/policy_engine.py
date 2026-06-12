@@ -643,9 +643,17 @@ class PolicyEngine:
 
     @staticmethod
     def _suppressible(policy: Policy) -> bool:
-        """Whether a resident quiet window may suppress this type. Never P1:
-        ``fall.confirmed`` (and any future P1) always pages."""
-        return policy.priority != NEVER_SUPPRESS_PRIORITY
+        """Whether a resident quiet window may suppress this type.
+
+        Two guards: never P1 (``fall.confirmed`` always pages), and ONLY
+        wellness nudges — the spec scopes the window to "non-fall *wellness*
+        alerts". A ``system.*`` health alert (e.g. ``system.sensing_gap``) must
+        still reach the caregiver: if sensing drops during a window that can
+        run up to 24h, a fall can't be detected at all, so silencing "we've
+        lost sensing" would be a monitoring blind spot, not a nuisance mute.
+        """
+        return (policy.priority != NEVER_SUPPRESS_PRIORITY
+                and policy.type.startswith("wellness."))
 
     def _active_quiet_window(self, session, home: str, now: float) -> db.QuietWindow | None:
         """The home's quiet window in force at ``now`` (un-canceled, un-lapsed)."""
