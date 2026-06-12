@@ -103,6 +103,27 @@ export function getDailyActiveMinutes() {
   return Promise.resolve(mock.mockDailyActiveMinutes);
 }
 
+// -- BAT-43 demo mode (only present when ingest runs with HEARTH_DEMO=1) -----
+
+// The demo control panel drives these. In mock mode they no-op so the panel is
+// still clickable with no backend.
+export function getDemoStatus() {
+  if (USE_MOCK) {
+    return Promise.resolve({ enabled: true, playing: false, scenario: null, source: "simulated" });
+  }
+  return getJSON(`${INGEST}/api/demo/status`);
+}
+
+export function playDemo(scenario) {
+  if (USE_MOCK) return Promise.resolve({ playing: true, scenario, source: "simulated" });
+  return postJSON(`${INGEST}/api/demo/play`, { scenario });
+}
+
+export function resetDemo() {
+  if (USE_MOCK) return Promise.resolve({ playing: false, reset: true, source: "simulated" });
+  return postJSON(`${INGEST}/api/demo/reset`, {});
+}
+
 // -- live mesh feed ---------------------------------------------------------
 
 // Build the WebSocket URL for the 1 Hz live mesh feed. Same-origin in dev (vite

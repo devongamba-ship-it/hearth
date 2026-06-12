@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import delete, func, select
 
-from .db import FallTransition, Reading, make_session_factory
+from .db import Event, FallTransition, Reading, make_session_factory
 
 log = logging.getLogger("hearth.ingest.retention")
 
@@ -204,6 +204,32 @@ def purge(
                             extra={"event": "retention_dry_run", "count": matched})
 
     return PurgeReport(dry_run=not confirm, items=items)
+
+
+# Pipeline tables the demo-mode reset (BAT-43) wipes wholesale, newest-dependent
+# first. This is the only deletion in the codebase besides the retention purge,
+# and it lives here on purpose: deletion stays in one auditable, logged module
+# (see the no-silent-deletion guard in test_retention.py).
+_DEMO_TABLES = (FallTransition, Event, Reading)
+
+
+def purge_demo_data(session_factory, *, logger: logging.Logger | None = None) -> dict[str, int]:
+    """Wipe every pipeline row for a demo reset (BAT-43). Returns rows cleared per table.
+
+    Unlike :func:`purge`, this is unconditional and total — demo readings are
+    disposable, so a reset clears everything rather than an aged window. It is
+    reachable only from the ``HEARTH_DEMO``-gated demo endpoints and must never
+    be pointed at a production database; like the retention purge, every reset is
+    logged so the deletion is never silent.
+    """
+    logger = logger or log
+    counts: dict[str, int] = {}
+    with session_factory() as session:
+        for model in _DEMO_TABLES:
+            counts[model.__tablename__] = session.execute(delete(model)).rowcount or 0
+        session.commit()
+    logger.info("demo reset: cleared %s", counts, extra={"event": "demo_reset"})
+    return counts
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - CLI entrypoint

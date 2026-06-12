@@ -24,7 +24,9 @@ import {
   resolveIncident,
 } from "./api.js";
 import { useLiveFeed } from "./live.js";
+import { isDemoEnabled } from "./demo.js";
 import SourceBadge from "./components/SourceBadge.jsx";
+import DemoPanel from "./components/DemoPanel.jsx";
 import Queue from "./components/Queue.jsx";
 import IncidentView from "./components/IncidentView.jsx";
 import HomeDetail from "./components/HomeDetail.jsx";
@@ -33,6 +35,10 @@ import History from "./components/History.jsx";
 const POLL_MS = 4000;
 const HOME_ID = import.meta.env.VITE_HOME_ID || "home";
 const OPERATOR = import.meta.env.VITE_OPERATOR || "ops";
+
+// Demo controls (BAT-43) are opt-in: `?demo` in the URL, or VITE_DEMO=1 at build.
+const DEMO = isDemoEnabled(typeof window !== "undefined" ? window.location.search : "") ||
+  import.meta.env.VITE_DEMO === "1";
 
 const TABS = [
   { key: "queue", label: "Queue" },
@@ -160,6 +166,8 @@ export default function App() {
         </nav>
         {error && <span className="topbar-error" role="status">offline — {error}</span>}
       </header>
+
+      {DEMO && <DemoPanel />}
 
       <main className="content">
         {tab === "queue" && (

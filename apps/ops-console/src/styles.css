@@ -95,6 +95,42 @@ h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 .source-badge.live { color: var(--ok); border-color: var(--ok); }
 .source-badge.degraded { color: var(--warn); border-color: var(--warn); }
 .source-badge.offline { color: var(--p1); border-color: var(--p1); }
+
+/* Demo control strip (BAT-43) — violet, matching the "simulated" badge so it
+   reads as obviously not-live. Only shown with ?demo. */
+.demo-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.4rem 0.9rem;
+  background: rgba(139, 92, 246, 0.1);
+  border-bottom: 1px solid var(--violet);
+}
+.demo-tag {
+  font: 700 0.7rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.12em;
+  color: #fff;
+  background: var(--violet);
+  padding: 0.2rem 0.45rem;
+  border-radius: 4px;
+}
+.demo-sub { color: var(--muted); font-size: 0.78rem; }
+.demo-buttons { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-left: auto; }
+.demo-btn {
+  font: 600 0.78rem/1 ui-sans-serif, system-ui, sans-serif;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+.demo-btn:hover:not(:disabled) { border-color: var(--violet); }
+.demo-btn:disabled { opacity: 0.5; cursor: default; }
+.demo-btn.active { border-color: var(--violet); color: var(--violet); }
+.demo-btn.reset { color: var(--muted); }
+.demo-error { color: var(--p1); font-size: 0.78rem; }
 .pill {
   font-size: 0.72rem;
   padding: 0.1rem 0.5rem;
