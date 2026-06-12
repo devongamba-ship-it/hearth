@@ -50,6 +50,17 @@ log = logging.getLogger("hearth.ingest.fall_machine")
 
 Clock = Callable[[], float]
 
+# Canonical feature-snapshot keys persisted on every transition (BAT-41). The
+# long game is fall *prediction* from longitudinal data, so every decision the
+# machine makes must persist the full motion/breathing/confidence/window state
+# at decision time — not just the state name — or that event is useless as
+# training data later. :meth:`Frame.features` is the single producer; this tuple
+# is the contract downstream (and the completeness test) checks against.
+FEATURE_KEYS = (
+    "ts", "presence", "motion", "fall_flag",
+    "breathing_bpm", "hr_bpm", "confidence", "occupancy",
+)
+
 
 class State(str, Enum):
     NORMAL = "NORMAL"
@@ -90,12 +101,12 @@ class Frame:
         )
 
     def features(self) -> dict:
-        return {
-            "ts": self.ts, "presence": self.presence, "motion": self.motion,
-            "fall_flag": self.fall_flag, "breathing_bpm": self.breathing_bpm,
-            "hr_bpm": self.hr_bpm, "confidence": self.confidence,
-            "occupancy": self.occupancy,
-        }
+        """The full decision-time snapshot persisted on every transition.
+
+        Keyed by :data:`FEATURE_KEYS` so the persisted shape and the downstream
+        contract can never drift apart (BAT-41 feature-snapshot completeness).
+        """
+        return {key: getattr(self, key) for key in FEATURE_KEYS}
 
 
 @dataclass
