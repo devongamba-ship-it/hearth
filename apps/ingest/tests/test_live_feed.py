@@ -22,10 +22,13 @@ from ingest.live import (
     DROPOUT_SECS,
     DWELL_SECS,
     RESP_MIN_SAMPLES,
+    SOURCE_LIVE,
+    SOURCE_SIMULATED,
     WINDOW_SECS,
     LiveFeed,
     activity_index,
     posture_estimate,
+    resolve_source,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -216,6 +219,33 @@ def test_dropout_not_repeated_then_clears_on_recovery(session_factory):
     feed.tick()
     clock.t = 24
     assert len(_events(feed.tick(), "sensing_dropout")) == 1
+
+
+def test_frame_carries_authoritative_node_health(session_factory):
+    """BAT-34 review: the badge can't be reconstructed from the one-shot
+    sensing_dropout event. Every frame must carry nodes_reporting + nodes_offline
+    so a sustained outage stays flagged for its whole duration."""
+    clock = FakeClock(0)
+    feed = _feed(session_factory, clock)
+    _persist(session_factory, 1, ts=1000)
+    frame = _frame(feed.tick())
+    assert frame["nodes_reporting"] == 1
+    assert frame["nodes_offline"] == []
+
+    # Node 1 goes silent and STAYS silent: offline must persist across ticks,
+    # not flicker back after the single dropout event.
+    for t in (11, 12, 20, 60):
+        clock.t = t
+        frame = _frame(feed.tick())
+        assert frame["nodes_offline"] == [1], f"flickered back at t={t}"
+        assert frame["nodes_reporting"] == 0
+
+    # A fresh packet clears it — the real recovery signal.
+    _persist(session_factory, 1, ts=2000)
+    clock.t = 61
+    frame = _frame(feed.tick())
+    assert frame["nodes_offline"] == []
+    assert frame["nodes_reporting"] == 1
 
 
 # -- ticker events: room transition + dwell ----------------------------------
@@ -470,4 +500,53 @@ def test_respiration_estimate_is_smoothed_never_a_raw_reading(session_factory):
     # Raw reading field names still never leave the home.
     for forbidden in ("motion_energy", "breathing", "breathing_bpm", "hr_bpm",
                       "presence_score", "fall_flag"):
+        assert forbidden not in blob
+
+
+# -- BAT-34: data-source label on the frame ----------------------------------
+
+
+def test_resolve_source_maps_sim_aliases_to_simulated():
+    """The operator-set HEARTH_SOURCE value normalises to the two frame labels."""
+    for alias in ("sim", "simulated", "SIMULATED", "Packet_Sim", "  packet-sim  "):
+        assert resolve_source(alias) == SOURCE_SIMULATED
+
+
+def test_resolve_source_defaults_to_live():
+    """Unset / unknown / live -> "live": real silicon is the production default."""
+    for value in (None, "", "   ", "live", "esp32", "hardware"):
+        assert resolve_source(value) == SOURCE_LIVE
+
+
+def test_frame_defaults_to_live_source(session_factory):
+    """A feed with no configured source advertises itself as live."""
+    _persist(session_factory, 1, motion=2500, occupancy=1)
+    frame = _frame(_feed(session_factory, FakeClock(0)).tick())
+    assert frame["source"] == SOURCE_LIVE
+
+
+def test_frame_carries_simulated_source_when_configured(session_factory):
+    """source="simulated" surfaces verbatim on the room_activity frame."""
+    _persist(session_factory, 1, motion=2500, occupancy=1)
+    feed = LiveFeed(
+        session_factory, load_layout_from_text(LAYOUT_YAML),
+        source="packet_sim", clock=FakeClock(0),
+    )
+    frame = _frame(feed.tick())
+    assert frame["source"] == SOURCE_SIMULATED
+
+
+def test_source_label_is_not_a_raw_reading(session_factory):
+    """The source field is a coarse, fixed label — never a raw reading (privacy)."""
+    _persist(session_factory, 1, motion=3000, occupancy=1, confidence=0.9)
+    feed = LiveFeed(
+        session_factory, load_layout_from_text(LAYOUT_YAML),
+        source="simulated", clock=FakeClock(0),
+    )
+    frame = _frame(feed.tick())
+    assert frame["source"] in (SOURCE_LIVE, SOURCE_SIMULATED)
+    # Adding the label introduced no raw reading fields.
+    blob = json.dumps(frame)
+    for forbidden in ("motion_energy", "breathing", "hr_bpm", "presence_score",
+                      "fall_flag"):
         assert forbidden not in blob

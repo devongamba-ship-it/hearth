@@ -33,7 +33,7 @@ DEMO_LAYOUT = REPO_ROOT / "apps" / "ingest" / "layout.yaml"
 def _reset_app_state():
     """Keep the module-level FastAPI app's state from leaking across tests."""
     yield
-    for attr in ("layout", "live_interval", "clock", "session_factory"):
+    for attr in ("layout", "live_interval", "clock", "session_factory", "source"):
         if hasattr(app.state, attr):
             delattr(app.state, attr)
 
@@ -61,6 +61,8 @@ def _assert_renderable(frame: dict) -> None:
         assert 0 <= room["activity_index"] <= 100
     assert isinstance(frame["tracks"], list)
     assert isinstance(frame["tracking_degraded"], bool)
+    # BAT-34: the data-source label rides every frame so clients can badge it.
+    assert frame["source"] in ("simulated", "live")
 
 
 def test_ws_streams_renderable_frame(session_factory):
@@ -76,9 +78,26 @@ def test_ws_streams_renderable_frame(session_factory):
         frame = _read_room_activity(ws)
 
     _assert_renderable(frame)
+    assert frame["source"] == "live"  # default when HEARTH_SOURCE is unset
     kitchen = next(r for r in frame["rooms"] if r["room"] == "kitchen")
     assert kitchen["occupancy_count"] == 1
     assert any(t["track_id"] == "A" and t["room"] == "kitchen" for t in frame["tracks"])
+
+
+def test_ws_source_label_follows_app_state(session_factory):
+    """BAT-34: app.state.source (operator's HEARTH_SOURCE) reaches the frame."""
+    persist(session_factory, Vitals(
+        node_id=1, presence=True, fall=False, motion=True, breathing_bpm=15.0,
+        heart_bpm=72.0, rssi=-55, occupancy=1, motion_energy=2500.0,
+        presence_score=0.9, timestamp_ms=1000,
+    ))
+    _configure(session_factory)
+    app.state.source = "packet_sim"
+
+    with TestClient(app).websocket_connect("/homes/rosewood/live") as ws:
+        frame = _read_room_activity(ws)
+
+    assert frame["source"] == "simulated"
 
 
 # -- full chain: packet_sim -> listener -> SQLite -> WS feed ------------------

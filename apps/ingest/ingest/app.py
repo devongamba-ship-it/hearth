@@ -24,6 +24,7 @@ reboot.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -33,7 +34,7 @@ from . import __version__, caregiver
 from .db import CONFIRMED_FALL, FallTransition, Reading, init_db, make_engine, make_session_factory
 from .detection import load_config
 from .layout import HomeLayout, load_layout
-from .live import LiveFeed
+from .live import LiveFeed, resolve_source
 
 app = FastAPI(title="Hearth Ingest", version=__version__)
 
@@ -312,7 +313,13 @@ def _build_live_feed(websocket: WebSocket, home_id: str) -> LiveFeed:
             node_ids = session.scalars(select(Reading.node_id).distinct()).all()
         layout = HomeLayout.from_detection(config, node_ids, home_id=home_id)
     clock = getattr(websocket.app.state, "clock", None)
-    return LiveFeed(factory, layout, home_id=home_id, clock=clock)
+    # Data-source label (BAT-34): an app.state override (tests set this) else the
+    # operator-set HEARTH_SOURCE env. Defaults to "live" — real silicon is the
+    # production case; the operator flips HEARTH_SOURCE=simulated for sim runs.
+    source = getattr(websocket.app.state, "source", None) or os.environ.get("HEARTH_SOURCE")
+    return LiveFeed(
+        factory, layout, home_id=home_id, source=resolve_source(source), clock=clock
+    )
 
 
 @app.websocket("/homes/{home_id}/live")

@@ -60,4 +60,16 @@ describe("HUD", () => {
     render(<HUD hud={{ ...hud, resident: null, motionEnergy: null, confidence: null }} />);
     expect(screen.getByText("not located")).toBeInTheDocument();
   });
+
+  it("renders the data-source badge in the HUD strip (BAT-34)", () => {
+    render(<HUD hud={hud} sourceBadge={{ kind: "live", label: "live · 2 nodes" }} />);
+    const badge = screen.getByLabelText("Data source: live · 2 nodes");
+    expect(badge).toHaveTextContent("live · 2 nodes");
+    expect(badge).toHaveClass("source-badge", "live");
+  });
+
+  it("omits the source badge when none is supplied", () => {
+    render(<HUD hud={hud} />);
+    expect(screen.queryByLabelText(/Data source:/)).toBeNull();
+  });
 });

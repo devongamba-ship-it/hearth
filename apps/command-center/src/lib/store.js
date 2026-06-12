@@ -18,6 +18,9 @@
 //     events: [...recent ticker items, newest first],
 //     hud: { ... },
 //     lastTs: number | null,
+//     source: "simulated" | "live" | null,   // data-source label off the frame
+//     offlineNodes: [nodeId],                 // nodes with an uncleared dropout
+//     lastDropoutTs: number | null,           // newest dropout ts (for clearing)
 //   }
 
 import { tracksToFigures } from "./figures.js";
@@ -46,6 +49,13 @@ export function initialState(scene) {
     events: [],
     hud: emptyHud(),
     lastTs: null,
+    // Data-source badge inputs (BAT-34): the label the feed stamps on each frame
+    // and the set of nodes currently flagged offline by a sensing_dropout. The
+    // offline set clears on the next healthy frame (the feed emits no per-node
+    // recovery event — privacy: aggregated frames only).
+    source: null,
+    offlineNodes: [],
+    lastDropoutTs: null,
   };
 }
 
@@ -129,6 +139,16 @@ function applyRoomActivity(state, msg, scene) {
   // Fall watch from the track states (the incident stream also sets it).
   const trackFallWatch = figures.some((f) => f.fallen);
   const fallWatch = trackFallWatch || isIncidentWatching(state.incident);
+  // Data-source label (BAT-34) + offline-node clearing. A healthy (non-degraded)
+  // frame strictly newer than every recorded dropout means the mesh recovered —
+  // clear the offline set (the feed emits no per-node recovery event).
+  const frameTs = msg.ts ?? state.lastTs;
+  const recovered =
+    state.offlineNodes.length > 0 &&
+    !degraded &&
+    frameTs != null &&
+    state.lastDropoutTs != null &&
+    frameTs > state.lastDropoutTs;
   return {
     ...state,
     rooms,
@@ -136,6 +156,9 @@ function applyRoomActivity(state, msg, scene) {
     tracking_degraded: degraded,
     occupancyBadges,
     fallWatch,
+    source: msg.source ?? state.source,
+    offlineNodes: recovered ? [] : state.offlineNodes,
+    lastDropoutTs: recovered ? null : state.lastDropoutTs,
     hud: buildHud(rooms, figures, scene, fallWatch),
     lastTs: msg.ts ?? state.lastTs,
   };
@@ -159,7 +182,16 @@ function applyEvent(state, msg) {
     ts: msg.ts ?? state.lastTs,
     detail: msg,
   };
-  return { ...state, events: pushEvent(state.events, item) };
+  const events = pushEvent(state.events, item);
+  // A node going silent >10s flags it offline for the data-source badge (BAT-34).
+  if (msg.event === "sensing_dropout" && msg.node_id != null) {
+    const offlineNodes = state.offlineNodes.includes(msg.node_id)
+      ? state.offlineNodes
+      : [...state.offlineNodes, msg.node_id];
+    const lastDropoutTs = Math.max(state.lastDropoutTs ?? -Infinity, msg.ts ?? 0);
+    return { ...state, events, offlineNodes, lastDropoutTs };
+  }
+  return { ...state, events };
 }
 
 function applyIncident(state, msg, scene) {

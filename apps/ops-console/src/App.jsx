@@ -24,6 +24,7 @@ import {
   resolveIncident,
 } from "./api.js";
 import { useLiveFeed } from "./live.js";
+import SourceBadge from "./components/SourceBadge.jsx";
 import Queue from "./components/Queue.jsx";
 import IncidentView from "./components/IncidentView.jsx";
 import HomeDetail from "./components/HomeDetail.jsx";
@@ -55,7 +56,7 @@ export default function App() {
   const [activeMinutes, setActiveMinutes] = useState(null);
   const [error, setError] = useState(null);
 
-  const { frame, ticker } = useLiveFeed(HOME_ID);
+  const { frame, ticker, connected, offlineCount } = useLiveFeed(HOME_ID);
 
   // One-time reference data (layout, sensing health, trends, thresholds, circle).
   useEffect(() => {
@@ -143,6 +144,7 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <h1>Hearth Ops</h1>
+        <SourceBadge connected={connected} frame={frame} offlineCount={offlineCount} />
         <nav className="tabs" aria-label="Sections">
           {TABS.map((t) => (
             <button

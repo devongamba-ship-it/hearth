@@ -14,6 +14,7 @@ import Ticker from "./components/Ticker.jsx";
 import { getLayout, openLiveFeed, DEFAULT_HOME } from "./api.js";
 import { layoutToScene } from "./lib/layout.js";
 import { applyMessage, initialState } from "./lib/store.js";
+import { deriveSourceBadge } from "./lib/source.js";
 import { DEFAULT_VIEW } from "./lib/views.js";
 import { DEFAULT_FIGURE_STYLE } from "./lib/figures.js";
 
@@ -22,6 +23,7 @@ export default function App({ homeId = DEFAULT_HOME }) {
   const [state, setState] = useState(null);
   const [view, setView] = useState(DEFAULT_VIEW);
   const [style, setStyle] = useState(DEFAULT_FIGURE_STYLE);
+  const [connected, setConnected] = useState(false);
   const [error, setError] = useState(null);
   const sceneRef = useRef(null);
 
@@ -36,11 +38,15 @@ export default function App({ homeId = DEFAULT_HOME }) {
         sceneRef.current = geo;
         setScene(geo);
         setState(initialState(geo));
-        feed = openLiveFeed(homeId, (msg) => {
-          setState((prev) =>
-            applyMessage(prev ?? initialState(sceneRef.current), msg, sceneRef.current),
-          );
-        });
+        feed = openLiveFeed(
+          homeId,
+          (msg) => {
+            setState((prev) =>
+              applyMessage(prev ?? initialState(sceneRef.current), msg, sceneRef.current),
+            );
+          },
+          { onStatus: (up) => !cancelled && setConnected(up) },
+        );
       } catch (e) {
         if (!cancelled) setError(e.message || String(e));
       }
@@ -50,6 +56,23 @@ export default function App({ homeId = DEFAULT_HOME }) {
       feed?.close();
     };
   }, [homeId]);
+
+  // Data-source badge (BAT-34): the frame's source label + feed health, derived
+  // purely from store state and the WS connection flag. Null frame until the
+  // first room_activity → the badge reads "feed offline".
+  const sourceBadge = deriveSourceBadge({
+    connected,
+    frame:
+      state?.lastTs == null
+        ? null
+        : {
+            source: state.source,
+            home_id: state.homeId,
+            tracking_degraded: state.tracking_degraded,
+            nodeCount: state.figures.length,
+          },
+    offlineCount: state?.offlineNodes.length ?? 0,
+  });
 
   if (error) {
     return (
@@ -75,7 +98,7 @@ export default function App({ homeId = DEFAULT_HOME }) {
       />
       <div className="stage">
         {scene && <SceneView scene={scene} state={state} view={view} style={style} />}
-        <HUD hud={state?.hud} />
+        <HUD hud={state?.hud} sourceBadge={sourceBadge} />
         {state?.tracking_degraded && (
           <div className="degraded-banner" role="status">
             Tracking degraded — showing room occupancy counts

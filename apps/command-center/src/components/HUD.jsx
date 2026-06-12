@@ -13,7 +13,7 @@ function metric(value, unit) {
   return unit ? `${value}${unit}` : String(value);
 }
 
-export default function HUD({ hud }) {
+export default function HUD({ hud, sourceBadge }) {
   const resident = hud?.resident ?? null;
   const unavailable =
     "Coarse smoothed estimate from the privacy-preserving feed; — when confidence is too low";
@@ -21,6 +21,16 @@ export default function HUD({ hud }) {
     <aside className="hud" aria-label="Telemetry HUD">
       <header className="hud-head">
         <span>Telemetry</span>
+        {sourceBadge && (
+          <span
+            className={`source-badge ${sourceBadge.kind}`}
+            role="status"
+            aria-label={`Data source: ${sourceBadge.label}`}
+            title="Data source — simulated packets vs live ESP32 nodes (BAT-34)"
+          >
+            {sourceBadge.label}
+          </span>
+        )}
         {hud?.fallWatch && <span className="hud-fall">FALL WATCH</span>}
       </header>
 

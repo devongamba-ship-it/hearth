@@ -41,6 +41,8 @@ function activity(ts, hotRoom, tracks, opts = {}) {
   return {
     type: "room_activity",
     home_id: "rosewood",
+    // Backendless demo data → the source badge reads "simulated" (BAT-34).
+    source: "simulated",
     ts,
     rooms,
     tracks,

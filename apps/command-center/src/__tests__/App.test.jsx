@@ -58,8 +58,12 @@ describe("App", () => {
       }),
     );
 
+    // The source badge (BAT-34) is also a role="status" region, so assert one
+    // of the status regions is the fall-watch badge.
     await waitFor(() =>
-      expect(screen.getByRole("status")).toHaveTextContent("FALL WATCH"),
+      expect(
+        screen.getAllByRole("status").some((el) => el.textContent.includes("FALL WATCH")),
+      ).toBe(true),
     );
   });
 

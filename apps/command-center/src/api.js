@@ -38,15 +38,23 @@ function liveUrl(homeId) {
  * handle with `.close()`. In mock mode a timer replays mockFrameStream() at the
  * given cadence instead of opening a socket.
  *
+ * `opts.onStatus(connected)` (optional) reports the WS connection state — true
+ * on open, false on close/error — so the data-source badge can show "feed
+ * offline" (BAT-34). Mock mode reports connected immediately.
+ *
  * `deps` lets tests inject a fake WebSocket / timer; production uses globals.
  */
 export function openLiveFeed(homeId, onMessage, opts = {}) {
-  const { intervalMs = 1000 } = opts;
+  const { intervalMs = 1000, onStatus } = opts;
   if (USE_MOCK || opts.mock) {
+    onStatus?.(true);
     return replayMock(onMessage, intervalMs, opts);
   }
   const Socket = opts.WebSocket || window.WebSocket;
   const ws = new Socket(liveUrl(homeId));
+  ws.onopen = () => onStatus?.(true);
+  ws.onclose = () => onStatus?.(false);
+  ws.onerror = () => onStatus?.(false);
   ws.onmessage = (ev) => {
     try {
       onMessage(JSON.parse(ev.data));
