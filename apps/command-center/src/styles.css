@@ -155,6 +155,21 @@ body {
   font-weight: 700;
 }
 
+/* data-source badge (BAT-34): simulated / live / degraded / feed offline */
+.source-badge {
+  font: 600 0.66rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  padding: 0.18rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.source-badge.simulated { color: #a78bfa; }
+.source-badge.live { color: #3ddc84; }
+.source-badge.degraded { color: #f5b340; }
+.source-badge.offline { color: var(--fall); }
+
 .hud-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

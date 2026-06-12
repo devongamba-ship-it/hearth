@@ -144,6 +144,7 @@ export const mockThresholds = {
 export const mockLiveFrame = {
   type: "room_activity",
   home_id: "Rosewood",
+  source: "simulated", // backendless demo data → the source badge reads "simulated" (BAT-34)
   ts: T0 + 601,
   tracking_degraded: false,
   rooms: [

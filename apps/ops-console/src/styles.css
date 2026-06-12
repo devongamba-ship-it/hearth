@@ -81,6 +81,20 @@ h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 .badge.ok { color: var(--ok); border-color: var(--ok); }
 .badge.warn { color: var(--warn); border-color: var(--warn); }
 .badge.stub { color: var(--muted); }
+
+/* data-source badge (BAT-34): simulated / live / degraded / feed offline */
+.source-badge {
+  font: 600 0.72rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+  text-transform: lowercase;
+}
+.source-badge.simulated { color: var(--violet); border-color: var(--violet); }
+.source-badge.live { color: var(--ok); border-color: var(--ok); }
+.source-badge.degraded { color: var(--warn); border-color: var(--warn); }
+.source-badge.offline { color: var(--p1); border-color: var(--p1); }
 .pill {
   font-size: 0.72rem;
   padding: 0.1rem 0.5rem;

@@ -19,6 +19,12 @@ message):
   If track-separation confidence is low the frame carries ``tracking_degraded:
   true`` and an empty ``tracks`` array — clients degrade to count badges.
 
+  The frame also carries a ``source`` label (BAT-34): ``"simulated"`` when the
+  floor is driven by packet_sim, ``"live"`` on real silicon. It lets the ops
+  console / command center badge the data source at a glance (the calibration-day
+  flip from sim to ESP32 nodes visibly confirms itself). Additive and coarse — a
+  configured label, not a raw reading; older clients ignore the unknown field.
+
   Each track may also carry two **optional** coarse vitals estimates (BAT-33),
   derived from the same persisted breathing/motion aggregates — never raw
   readings:
@@ -91,6 +97,27 @@ POSTURE_UPRIGHT_MOTION = ACTIVITY_REF * 0.1
 
 # Fall-machine states (db `to_state`) that put a track into "fall_watch".
 _WATCH_STATES = {"SUSPECTED", "PROBABLE", "CHECK_IN_ACTIVE", "CONFIRMED_FALL"}
+
+# Data-source labels advertised on each room_activity frame (BAT-34) so the ops
+# console / command center can badge whether the floor is driven by packet_sim
+# or real silicon. The env values (HEARTH_SOURCE) the operator sets that mean
+# "this is the simulator"; anything else is treated as live.
+SOURCE_SIMULATED = "simulated"
+SOURCE_LIVE = "live"
+_SIM_SOURCE_ALIASES = {"sim", "simulated", "packet_sim", "packet-sim"}
+
+
+def resolve_source(value: str | None) -> str:
+    """Normalise a configured source hint to ``simulated`` or ``live`` (BAT-34).
+
+    The operator flips this on calibration day (env ``HEARTH_SOURCE``) when they
+    swap packet_sim for live ESP32 nodes. Any of the sim aliases -> ``simulated``;
+    anything else, including unset, defaults to ``live`` — real silicon is the
+    production case, so an unconfigured feed advertises itself as live.
+    """
+    if value and value.strip().lower() in _SIM_SOURCE_ALIASES:
+        return SOURCE_SIMULATED
+    return SOURCE_LIVE
 
 
 class _NodeSnapshot:
@@ -167,11 +194,16 @@ class LiveFeed:
         layout: HomeLayout,
         *,
         home_id: str | None = None,
+        source: str = SOURCE_LIVE,
         clock: Clock | None = None,
     ) -> None:
         self._sessions = session_factory
         self.layout = layout
         self.home_id = home_id or layout.home_id
+        # Data-source label stamped on every room_activity frame (BAT-34):
+        # "simulated" when fed by packet_sim, "live" on real silicon. Normalised
+        # so an operator's raw HEARTH_SOURCE value can't leak an odd string.
+        self.source = resolve_source(source)
         self._clock = clock or time.time
 
         self._nodes: dict[int, _NodeSnapshot] = {}
@@ -207,6 +239,7 @@ class LiveFeed:
         messages.append({
             "type": "room_activity",
             "home_id": self.home_id,
+            "source": self.source,
             "ts": now,
             "rooms": rooms,
             "tracks": tracks,

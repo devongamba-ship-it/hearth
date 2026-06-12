@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import { USE_MOCK, liveFeedUrl } from "./api.js";
 import { mockLiveEvents, mockLiveFrame } from "./mockData.js";
+import { foldDropouts } from "./source.js";
 
 const MAX_TICKER = 20;
 
@@ -17,6 +18,9 @@ export function useLiveFeed(homeId, { enabled = true } = {}) {
   const [ticker, setTicker] = useState([]);
   const [transitions, setTransitions] = useState([]);
   const [connected, setConnected] = useState(false);
+  // Nodes currently flagged offline (BAT-34): sensing_dropout adds a node, a
+  // healthy frame clears them (see foldDropouts). Size feeds the source badge.
+  const [dropouts, setDropouts] = useState(() => new Map());
 
   useEffect(() => {
     if (!enabled) return undefined;
@@ -42,6 +46,7 @@ export function useLiveFeed(homeId, { enabled = true } = {}) {
       } catch {
         return;
       }
+      setDropouts((d) => foldDropouts(d, msg));
       if (msg.type === "room_activity") {
         setFrame(msg);
       } else if (msg.type === "event") {
@@ -59,5 +64,5 @@ export function useLiveFeed(homeId, { enabled = true } = {}) {
     };
   }, [homeId, enabled]);
 
-  return { frame, ticker, transitions, connected };
+  return { frame, ticker, transitions, connected, offlineCount: dropouts.size };
 }

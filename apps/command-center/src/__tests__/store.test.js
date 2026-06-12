@@ -183,3 +183,49 @@ describe("applyMessage: robustness", () => {
     expect(applyMessage(s, null, scene)).toBe(s);
   });
 });
+
+describe("applyMessage: data-source badge inputs (BAT-34)", () => {
+  const dropout = (node_id, ts) => ({
+    type: "event",
+    event: "sensing_dropout",
+    node_id,
+    room: "bedroom",
+    ts,
+  });
+
+  it("records the frame's source label", () => {
+    const s = applyMessage(fresh(), roomActivity({ source: "simulated" }), scene);
+    expect(s.source).toBe("simulated");
+  });
+
+  it("flags a node offline on sensing_dropout", () => {
+    const s = applyMessage(fresh(), dropout(2, 5), scene);
+    expect(s.offlineNodes).toEqual([2]);
+    expect(s.lastDropoutTs).toBe(5);
+  });
+
+  it("does not double-count a repeated dropout for the same node", () => {
+    let s = applyMessage(fresh(), dropout(2, 5), scene);
+    s = applyMessage(s, dropout(2, 6), scene);
+    expect(s.offlineNodes).toEqual([2]);
+  });
+
+  it("clears offline nodes on the next healthy frame newer than the dropout", () => {
+    let s = applyMessage(fresh(), dropout(2, 5), scene);
+    s = applyMessage(s, roomActivity({ ts: 6, tracking_degraded: false }), scene);
+    expect(s.offlineNodes).toEqual([]);
+    expect(s.lastDropoutTs).toBeNull();
+  });
+
+  it("keeps offline nodes on a same-tick frame (shared ts)", () => {
+    let s = applyMessage(fresh(), dropout(2, 5), scene);
+    s = applyMessage(s, roomActivity({ ts: 5 }), scene);
+    expect(s.offlineNodes).toEqual([2]);
+  });
+
+  it("keeps offline nodes while the frame is still tracking_degraded", () => {
+    let s = applyMessage(fresh(), dropout(2, 5), scene);
+    s = applyMessage(s, roomActivity({ ts: 9, tracking_degraded: true, tracks: [] }), scene);
+    expect(s.offlineNodes).toEqual([2]);
+  });
+});
