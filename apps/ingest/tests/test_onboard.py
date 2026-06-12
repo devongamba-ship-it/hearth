@@ -225,6 +225,7 @@ def test_collect_plan_from_scripted_answers(tmp_path):
             "2",                 # node #2 id
             "bedroom",           # node #2 room
             "",                  # finish nodes
+            "",                  # discover mesh from a readings DB? (blank = skip)
             "Dana",              # contact #1 name
             "+1 555-555-0101",   # phone (gets cleaned to E.164)
             "1",                 # priority

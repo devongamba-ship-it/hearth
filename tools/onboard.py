@@ -136,6 +136,50 @@ def ring_links(node_ids: list[int]) -> list[tuple[int, int]]:
     return [(uniq[i], uniq[(i + 1) % len(uniq)]) for i in range(len(uniq))]
 
 
+def _as_db_url(value: str) -> str:
+    """Accept either a SQLAlchemy URL (``scheme://...``) or a bare file path."""
+    return value if "://" in value else f"sqlite:///{value}"
+
+
+def discover_links(
+    node_ids: list[int],
+    *,
+    session_factory=None,
+    db_url: str | None = None,
+    window_secs: float = 2.0,
+    min_confidence: float | None = None,
+) -> tuple[list[tuple[int, int]], str]:
+    """Pre-fill mesh links from a readings DB (a short walk / calibration session).
+
+    The "confirm what the mesh discovered" step (BAT-44): instead of authoring the
+    ring blind, run :func:`ingest.mesh_graph.discover_graph` over a readings DB and
+    hand the operator the inferred adjacencies to confirm/nudge. Returns
+    ``(links, human_description)``; falls back to the existing ring default when
+    there is no co-activation data.
+
+    Imports the ingest package lazily so onboard.py stays import-clean for the
+    escalation environment (which never runs discovery). ``among`` restricts
+    suggested links to the operator's own ``node_ids``, so a stray node in the
+    readings DB cannot inject an edge the layout does not know about.
+    """
+    from ingest.db import make_engine, make_session_factory  # lazy: ingest-only
+    from ingest.mesh_graph import (  # lazy: ingest-only
+        DEFAULT_LINK_CONFIDENCE,
+        describe_graph,
+        discover_graph,
+    )
+
+    threshold = DEFAULT_LINK_CONFIDENCE if min_confidence is None else min_confidence
+    ids = list(node_ids)
+    factory = session_factory or make_session_factory(make_engine(db_url))
+    with factory() as session:
+        graph = discover_graph(session, window_secs=window_secs)
+    links = graph.strongest_links(min_confidence=threshold, among=ids)
+    if not links:
+        return ring_links(ids), "no co-activation data — using the default ring mesh"
+    return links, describe_graph(graph, min_confidence=threshold)
+
+
 def validate_phone(phone: str) -> str:
     """Return the cleaned E.164 number, or raise ``OnboardingError``.
 
@@ -438,10 +482,20 @@ def collect_plan(ask=_ask, ask_yes_no=_ask_yes_no) -> OnboardingPlan:  # pragma:
         nodes.append(NodeSpec(id=node_id, room=room))
 
     node_ids = [n.id for n in nodes]
-    if ask_yes_no("\nUse the default ring mesh topology?", True):
+    # Discover-not-author (BAT-44): if the operator has a readings DB from a short
+    # walk / calibration session, pre-fill links from the observed mesh and let
+    # them confirm. Falls back to the ring default when there's no DB or no data.
+    links: list[tuple[int, int]] = []
+    discover_db = ask(
+        "\nReadings DB to discover the mesh from (path/URL, blank to skip)", ""
+    )
+    if discover_db:
+        links, description = discover_links(node_ids, db_url=_as_db_url(discover_db))
+        print("\nDiscovered mesh:\n" + description)
+        if not ask_yes_no("Use these discovered links?", True):
+            links = []
+    if not links and ask_yes_no("\nUse the default ring mesh topology?", True):
         links = ring_links(node_ids)
-    else:
-        links = []
 
     contacts: list[ContactSpec] = []
     print("\nContacts — caregiver circle. Blank name finishes the list.")
