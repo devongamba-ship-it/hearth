@@ -466,6 +466,55 @@ def test_vitals_absent_below_confidence_floor_but_track_still_placed(session_fac
     assert "posture_estimate" not in resident
 
 
+# -- per-target vitals attribution (BAT-35) ----------------------------------
+
+
+def test_guest_in_fall_watch_room_does_not_inherit_resident_vitals(session_factory):
+    """BAT-35: in a multi-occupant fall-watch room the resident track reads
+    floor + a respiration estimate, but the co-located guest track must NOT
+    inherit either. The vitals estimates are room-level; spreading them onto an
+    anonymous guest attributes one person's vitals to another. Until per-target
+    sensing lands, guests carry presence + room + state only."""
+    clock = FakeClock(0)
+    feed = _feed(session_factory, clock)
+
+    # Two occupants in the kitchen; warm the breathing window so the resident
+    # earns a respiration estimate and a guest-1 track is emitted alongside it.
+    for t in range(RESP_MIN_SAMPLES + 2):
+        _persist(session_factory, 1, motion=2500, occupancy=2,
+                 confidence=0.9, breath=15.0, ts=1000 + t)
+        feed.tick()
+
+    # Put the kitchen under fall watch -> the resident's posture reads "floor".
+    with session_factory() as s:
+        s.add(FallTransition(
+            incident_id="inc-1", node_id=1, reading_ts=1000 + RESP_MIN_SAMPLES,
+            at=1.0, from_state="NORMAL", to_state="SUSPECTED",
+            kind="transition", reason=None, features=None,
+        ))
+        s.commit()
+    _persist(session_factory, 1, motion=2500, occupancy=2, confidence=0.9,
+             breath=15.0, ts=2000)
+    messages = feed.tick()
+
+    tracks = {t["track_id"]: t for t in _frame(messages)["tracks"]}
+    assert set(tracks) == {"A", "guest-1"}
+
+    # The resident carries the room-level vitals — a fair attribution.
+    resident = tracks["A"]
+    assert resident["state"] == "fall_watch"
+    assert resident["posture_estimate"] == "floor"
+    assert resident["respiration_bpm_estimate"] == 15
+
+    # The guest, co-located in the same fall-watch room, inherits NEITHER:
+    # otherwise it would falsely read the resident's "floor" and breathing.
+    guest = tracks["guest-1"]
+    assert guest["room"] == "kitchen"
+    assert guest["state"] == "guest"
+    assert "posture_estimate" not in guest
+    assert "respiration_bpm_estimate" not in guest
+
+
 # -- privacy invariant -------------------------------------------------------
 
 
