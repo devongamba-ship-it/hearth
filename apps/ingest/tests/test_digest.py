@@ -22,6 +22,7 @@ Maps every acceptance criterion to a test:
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -157,10 +158,16 @@ def test_digest_is_non_medical_and_dumps_no_raw_numbers():
     blob = (digest.headline + " " + digest.summary + " " + digest.text()).lower()
     for word in dg.MEDICAL_WORDS:
         assert word not in blob, f"medical word leaked into digest copy: {word!r}"
-    # No raw reading fields anywhere in the rendered payload.
-    payload = digest.to_json()
-    for raw in ("motion", "hr_bpm", "breathing", "confidence", "readings", "ts"):
-        assert raw not in payload
+    # No raw reading fields anywhere in the SERIALIZED payload (scan values, not
+    # just top-level keys — a raw field nested in overview/highlights would slip
+    # a key-only check). Tokens are unambiguous raw column names, not prose
+    # substrings like "ts"/"motion" that legitimately appear in words.
+    # ("readings" is excluded — the PRIVACY_NOTICE legitimately says "no raw
+    # readings"; these are the raw Reading column names that must never appear.)
+    blob = json.dumps(digest.to_json()).lower()
+    for raw in ("hr_bpm", "breathing_bpm", "motion_energy", "confidence",
+                "received_at", "node_id", "fall_flag"):
+        assert raw not in blob, f"raw reading field leaked into digest payload: {raw!r}"
     # Highlights carry no raw numbers — deviations are phrased, not dumped.
     assert all(not any(ch.isdigit() for ch in h) for h in digest.highlights), NO_DIGITS
 
@@ -282,11 +289,27 @@ def test_aggregate_week_flags_a_real_anomalous_day(session_factory):
 
 
 def test_aggregate_skips_rows_without_received_at(session_factory):
-    # A legacy row with no wall-clock stamp can't be placed on a day -> skipped.
-    persist(session_factory, _active_vitals(1), received_at=None)
+    # A GENUINELY null-stamped row (persist() would stamp now instead) can't be
+    # placed on a day -> skipped, and must not crash aggregation on the None
+    # timestamp. Insert directly so received_at is really NULL; a valid in-window
+    # row proves aggregation still counts real data alongside it.
+    from ingest.db import Reading
+    active = datetime.combine(WEEK_START + timedelta(days=1),
+                              datetime.min.time()).timestamp() + 12 * 3600
+    with session_factory() as s:
+        s.add(Reading(node_id=1, ts=0, presence=True, motion=2000.0,
+                      breathing_bpm=15.0, hr_bpm=72.0, confidence=0.9,
+                      fall_flag=False, occupancy=1, received_at=None))   # NULL stamp
+        s.add(Reading(node_id=1, ts=1000, presence=True, motion=2000.0,
+                      breathing_bpm=15.0, hr_bpm=72.0, confidence=0.9,
+                      fall_flag=False, occupancy=1, received_at=active))  # in-window
+        s.commit()
     with session_factory() as session:
         week = dg.aggregate_week(session, WEEK_START, _config())
-    assert all(not d.has_data for d in week.days)
+    active_days = [d for d in week.days if d.has_data]
+    assert [d.date for d in active_days] == [
+        (WEEK_START + timedelta(days=1)).isoformat()
+    ]  # only the stamped row contributed; the null row was skipped
 
 
 # -- the /api/digest endpoint ------------------------------------------------
@@ -310,8 +333,11 @@ def test_digest_endpoint_returns_plain_language_summary(session_factory):
     assert body["all_normal"] is False
     assert any("Saturday" in h for h in body["highlights"])
     assert body["privacy"] == dg.PRIVACY_NOTICE
-    # Coarse only — no raw reading fields in the response.
-    assert "readings" not in body and "motion" not in body
+    # Coarse only — no raw reading fields anywhere in the serialized response.
+    blob = json.dumps(body).lower()
+    for raw in ("hr_bpm", "breathing_bpm", "motion_energy", "received_at",
+                "node_id", "fall_flag"):
+        assert raw not in blob, f"raw reading field leaked into /api/digest: {raw!r}"
 
 
 def test_digest_endpoint_defaults_to_recent_week(session_factory):
