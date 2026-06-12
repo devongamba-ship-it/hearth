@@ -55,6 +55,11 @@ const A = (room, state = "normal", confidence = 0.86) => ({
   confidence,
   identity_confidence: 0.9,
   state,
+  // Coarse vitals estimates (BAT-33): a steady ~15 brpm, posture floor while
+  // under fall watch and upright otherwise. Optional in the contract; the demo
+  // supplies them so the HUD's Respiration/Posture fields light up.
+  respiration_bpm_estimate: 15,
+  posture_estimate: state === "fall_watch" ? "floor" : "upright",
 });
 const guest = (n, room) => ({
   track_id: `guest-${n}`,

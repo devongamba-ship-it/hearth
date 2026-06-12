@@ -16,18 +16,26 @@ const hud = {
 };
 
 describe("HUD", () => {
-  // DELIBERATE SPEC CARVE-OUT (decided 2026-06-11, PR #11 review concern #2):
-  // the design's HUD lists respiration + posture, but the BAT-27 live feed
-  // intentionally carries no per-second vitals (privacy: aggregates only).
-  // "—" is the intended v1 rendering; BAT-33 extends the feed with coarse
-  // 1 Hz *estimates* (still no raw readings), after which these fields light
-  // up. Fabricating values to satisfy the literal criterion would be worse.
-  it("shows respiration and posture as unavailable, never fabricated", () => {
+  // SPEC CARVE-OUT, now resolved (BAT-33). The BAT-27 live feed deliberately
+  // carried no per-second vitals (privacy: aggregates only), so respiration +
+  // posture rendered as "—" (decided 2026-06-11, PR #11 review concern #2).
+  // BAT-33 extends the feed with coarse, smoothed 1 Hz *estimates* (still no raw
+  // readings): the fields light up when present and fall back to "—" when the
+  // feed omits them (confidence too low). Both paths are asserted below.
+  it("renders respiration and posture as '—' when the feed omits them", () => {
     render(<HUD hud={hud} />);
     const resp = screen.getByText("Respiration").closest("div").querySelector("dd");
     const post = screen.getByText("Posture").closest("div").querySelector("dd");
     expect(resp).toHaveTextContent("—");
     expect(post).toHaveTextContent("—");
+  });
+
+  it("renders the respiration + posture estimates when the feed supplies them", () => {
+    render(<HUD hud={{ ...hud, respiration: 15, posture: "upright" }} />);
+    const resp = screen.getByText("Respiration").closest("div").querySelector("dd");
+    const post = screen.getByText("Posture").closest("div").querySelector("dd");
+    expect(resp).toHaveTextContent("15 brpm");
+    expect(post).toHaveTextContent("upright");
   });
 
   it("shows motion and confidence derived from the feed", () => {

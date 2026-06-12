@@ -26,7 +26,12 @@ readings ever reach a client):
 - `WS /homes/{id}/live` — a 1 Hz feed of `room_activity` frames (per-room
   activity index + occupancy, plus an anonymous track array), `event` ticker
   items (room transitions, dwell starts, sensing dropouts), and `incident`
-  fall-machine transitions.
+  fall-machine transitions. Each track may also carry two **optional** coarse
+  vitals estimates (BAT-33), derived from the persisted breathing/motion
+  aggregates — never raw readings: `respiration_bpm_estimate` (integer BPM,
+  smoothed over ~30 s) and `posture_estimate` (`upright | seated | floor |
+  unknown`). Both are absent when presence confidence is too low; clients render
+  "—". Still aggregates only: nothing per-second, nothing raw, no waveform.
 
 ```bash
 # drive the feed from the simulator (separate terminals)

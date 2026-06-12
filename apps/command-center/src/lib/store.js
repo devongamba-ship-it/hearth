@@ -53,9 +53,10 @@ function emptyHud() {
   return {
     rooms: [],
     resident: null,
-    // Respiration and posture are NOT exposed by the aggregated feed (privacy
-    // brand: no per-second vitals leave the home). Surfaced as unavailable
-    // rather than fabricated. Motion is the activity index the feed does emit.
+    // Respiration and posture are coarse, smoothed *estimates* the feed may
+    // attach to the resident track (BAT-33) — still aggregates, never raw or
+    // per-second. They are optional: null until the feed supplies them, and the
+    // HUD renders "—" for a null rather than fabricating a vital sign.
     respiration: null,
     posture: null,
     motionEnergy: null,
@@ -96,8 +97,10 @@ function buildHud(rooms, figures, scene, fallWatch) {
           state: resident.state,
         }
       : null,
-    respiration: null,
-    posture: null,
+    // Coarse vitals estimates off the resident track when the feed supplies them
+    // (BAT-33); null → the HUD shows "—". Never fabricated locally.
+    respiration: resident ? resident.respiration ?? null : null,
+    posture: resident ? resident.posture ?? null : null,
     // Motion energy proxy: the resident's room activity index (the motion-derived
     // metric the feed actually provides). Null when the resident isn't located.
     motionEnergy: residentRoom ? residentRoom.activity_index : null,

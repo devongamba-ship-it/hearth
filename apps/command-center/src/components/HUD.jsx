@@ -1,10 +1,12 @@
 // HUD overlay (BAT-29): respiration, motion, posture, per-room activity,
 // confidence, and the FALL WATCH badge.
 //
-// Honesty note (privacy brand): the aggregated live feed (BAT-27) does NOT emit
-// per-second vitals — respiration and posture are not exposed by it, so we show
-// them as "—" with a tooltip rather than fabricating a number. Motion is the
-// activity index the feed actually provides; confidence is the resident track's.
+// Honesty note (privacy brand): respiration and posture are coarse, smoothed
+// *estimates* the feed attaches to the resident track (BAT-33) — still
+// aggregates, never raw or per-second. They are optional: when the feed omits
+// them (confidence too low) `hud.respiration` / `hud.posture` are null and we
+// render "—" with a tooltip rather than fabricating a number. Motion is the
+// activity index the feed provides; confidence is the resident track's.
 
 function metric(value, unit) {
   if (value == null) return "—";
@@ -13,7 +15,8 @@ function metric(value, unit) {
 
 export default function HUD({ hud }) {
   const resident = hud?.resident ?? null;
-  const unavailable = "Not exposed by the privacy-preserving feed";
+  const unavailable =
+    "Coarse smoothed estimate from the privacy-preserving feed; — when confidence is too low";
   return (
     <aside className="hud" aria-label="Telemetry HUD">
       <header className="hud-head">

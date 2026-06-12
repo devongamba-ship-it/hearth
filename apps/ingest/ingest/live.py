@@ -18,6 +18,22 @@ message):
   array-shaped so real per-target heuristics land later without a client change.
   If track-separation confidence is low the frame carries ``tracking_degraded:
   true`` and an empty ``tracks`` array — clients degrade to count badges.
+
+  Each track may also carry two **optional** coarse vitals estimates (BAT-33),
+  derived from the same persisted breathing/motion aggregates — never raw
+  readings:
+
+    * ``respiration_bpm_estimate`` — integer breaths-per-minute, smoothed over
+      the rolling ``WINDOW_SECS`` window. Absent until the window has warmed up
+      and while presence confidence is below ``VITALS_CONF_MIN``.
+    * ``posture_estimate`` — one of ``upright | seated | floor | unknown``.
+      ``floor`` whenever the track is under fall watch; otherwise ``upright``
+      when there is sustained motion, ``seated`` when present but still. Absent
+      below ``VITALS_CONF_MIN``.
+
+  Both are *estimates*, optional by contract: a client that sees neither keeps
+  rendering "—" (BAT-29's HUD already does). The privacy bar is unchanged —
+  smoothed 1 Hz estimates only, nothing per-second, nothing raw, no waveform.
 * ``event`` — ticker items: ``room_transition`` (the resident moved rooms),
   ``dwell_start`` (the resident has stayed put past the dwell threshold), and
   ``sensing_dropout`` (a node went silent > 10s). Carry ``track_id`` where it
@@ -58,15 +74,32 @@ DWELL_SECS = 30
 # Below this room presence confidence, track separation is untrustworthy: emit
 # occupancy counts with no positional tracks (tracking_degraded).
 TRACK_CONF_MIN = 0.4
+# Below this presence confidence the coarse vitals estimates (respiration,
+# posture) are withheld — a track can still be placed (>= TRACK_CONF_MIN) while
+# the signal is too weak to estimate vitals from. Then the fields are absent and
+# the client keeps rendering "—" (BAT-33; spec: "absent when confidence too low").
+VITALS_CONF_MIN = 0.5
+# Respiration is only emitted once the breathing window holds at least this many
+# samples, so the published estimate really is "smoothed over >= 30s" rather than
+# a barely-averaged first reading.
+RESP_MIN_SAMPLES = WINDOW_SECS
+# Rolling motion-energy mean at/above which a present (non-fall) track reads as
+# "upright" (moving/standing); below it the person is present but still ->
+# "seated". 10% of ACTIVITY_REF: ordinary moving-around (~800-4000) is well
+# above, quiet stillness (tens) well below. Fall watch overrides both -> floor.
+POSTURE_UPRIGHT_MOTION = ACTIVITY_REF * 0.1
 
 # Fall-machine states (db `to_state`) that put a track into "fall_watch".
 _WATCH_STATES = {"SUSPECTED", "PROBABLE", "CHECK_IN_ACTIVE", "CONFIRMED_FALL"}
 
 
 class _NodeSnapshot:
-    """The latest reading for one node, plus its rolling motion window."""
+    """The latest reading for one node, plus its rolling motion/breathing windows."""
 
-    __slots__ = ("reading_id", "motion", "presence", "occupancy", "confidence", "window")
+    __slots__ = (
+        "reading_id", "motion", "presence", "occupancy", "confidence",
+        "window", "breath_window", "breath_stale",
+    )
 
     def __init__(self) -> None:
         self.reading_id = 0
@@ -75,14 +108,48 @@ class _NodeSnapshot:
         self.occupancy = 0
         self.confidence = 0.0
         self.window: deque[float] = deque(maxlen=WINDOW_SECS)
+        # Breathing-rate samples, same rolling window. Only samples taken while
+        # the node reported presence with a valid (> 0) breathing lock land here.
+        self.breath_window: deque[float] = deque(maxlen=WINDOW_SECS)
+        # Fresh packets seen since the last valid breath sample. The deque only
+        # evicts on append, so without this a node that keeps sending packets
+        # with the breath lock lost (presence=1, breathing=0 — plausible during
+        # vigorous motion) would republish its last good mean forever. Once the
+        # lock has been gone a full window, the estimate must age out to absent.
+        self.breath_stale = 0
 
     def rolling_motion(self) -> float:
         return sum(self.window) / len(self.window) if self.window else 0.0
+
+    def rolling_breathing(self) -> float | None:
+        # Stale: the breath lock has been gone for a full window — the window
+        # still holds old samples (deque evicts only on append), so report
+        # absent rather than a number sourced from a dead signal.
+        if self.breath_stale >= WINDOW_SECS or not self.breath_window:
+            return None
+        return sum(self.breath_window) / len(self.breath_window)
 
 
 def activity_index(motion: float) -> int:
     """Map a rolling motion-energy mean to the 0-100 activity index."""
     return max(0, min(100, round(100.0 * motion / ACTIVITY_REF)))
+
+
+def posture_estimate(motion: float, *, present: bool, watch: bool) -> str:
+    """Coarse posture from rolling motion + fall-watch state.
+
+    A person under fall watch is treated as on the ``floor`` regardless of
+    residual motion. Otherwise sustained motion reads as ``upright`` and a
+    present-but-still person as ``seated``. ``unknown`` when there is no presence
+    to classify. This is a derived *estimate*, never a raw reading.
+    """
+    if watch:
+        return "floor"
+    if not present:
+        return "unknown"
+    if motion >= POSTURE_UPRIGHT_MOTION:
+        return "upright"
+    return "seated"
 
 
 class LiveFeed:
@@ -212,6 +279,16 @@ class LiveFeed:
                 # alive. A node that stops sending stops extending its window,
                 # so its activity index decays to zero over WINDOW_SECS.
                 snap.window.append(r.motion)
+                # Breathing feeds the respiration estimate. Only count a sample
+                # when the node had presence and a valid (> 0) breathing lock —
+                # an empty room or a dropped lock must not drag the mean down.
+                # Track ticks since the last valid lock so a long-lost lock ages
+                # the estimate out to absent instead of freezing the last mean.
+                if r.presence and r.breathing_bpm > 0:
+                    snap.breath_window.append(r.breathing_bpm)
+                    snap.breath_stale = 0
+                else:
+                    snap.breath_stale += 1
                 self._last_seen_at[node_id] = now
                 self._dropped.discard(node_id)
 
@@ -234,8 +311,10 @@ class LiveFeed:
                     (s.confidence for s in snaps if s.presence), default=0.0
                 )
                 present = any(s.presence for s in snaps) or occupancy > 0
+                breathing = self._room_breathing(snaps)
             else:
                 motion, occupancy, confidence, present = 0.0, 0, 0.0, False
+                breathing = None
             watch = any(node_states.get(n) in _WATCH_STATES for n in node_ids)
             ai = activity_index(motion)
             rooms_out.append({
@@ -246,10 +325,45 @@ class LiveFeed:
             room_meta[room_id] = {
                 "occupancy": occupancy, "confidence": confidence,
                 "present": present, "activity_index": ai, "watch": watch,
+                "motion": motion, "breathing": breathing,
             }
 
         tracks, degraded = self._tracks(room_meta)
         return rooms_out, tracks, degraded
+
+    @staticmethod
+    def _room_breathing(snaps: list[_NodeSnapshot]) -> float | None:
+        """Mean rolling breathing rate across the room's *warmed-up* nodes.
+
+        Only nodes whose breathing window holds >= RESP_MIN_SAMPLES contribute,
+        so the published estimate is genuinely smoothed over the window rather
+        than a barely-averaged first reading. None when no node has warmed up.
+        """
+        warm = [
+            s.rolling_breathing()
+            for s in snaps
+            if len(s.breath_window) >= RESP_MIN_SAMPLES
+        ]
+        warm = [b for b in warm if b is not None]
+        return sum(warm) / len(warm) if warm else None
+
+    @staticmethod
+    def _vitals_fields(meta: dict) -> dict:
+        """Optional coarse vitals (respiration, posture) for a track in a room.
+
+        Both are withheld below VITALS_CONF_MIN ("absent when confidence too
+        low"); respiration is additionally withheld until the breathing window
+        has warmed up (``breathing`` is None). Estimates only — no raw readings.
+        """
+        out: dict = {}
+        if meta["confidence"] < VITALS_CONF_MIN:
+            return out
+        out["posture_estimate"] = posture_estimate(
+            meta["motion"], present=meta["present"], watch=meta["watch"]
+        )
+        if meta["breathing"] is not None:
+            out["respiration_bpm_estimate"] = round(meta["breathing"])
+        return out
 
     def _tracks(self, room_meta: dict[str, dict]):
         """Resident track "A" in the strongest room, plus guest-N for extras."""
@@ -273,6 +387,7 @@ class LiveFeed:
             "confidence": round(room_meta[primary]["confidence"], 2),
             "identity_confidence": self.layout.identity_confidence,
             "state": "fall_watch" if room_meta[primary]["watch"] else "normal",
+            **self._vitals_fields(room_meta[primary]),
         }]
 
         # Unrecognised extra targets become anonymous guest tracks: every extra
@@ -289,6 +404,7 @@ class LiveFeed:
                     "confidence": round(room_meta[rid]["confidence"], 2),
                     "identity_confidence": 0.0,
                     "state": "guest",
+                    **self._vitals_fields(room_meta[rid]),
                 })
         return tracks, False
 

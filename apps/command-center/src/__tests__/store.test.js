@@ -83,7 +83,7 @@ describe("applyMessage: room_activity", () => {
 });
 
 describe("HUD model", () => {
-  it("never fabricates respiration or posture (privacy brand)", () => {
+  it("leaves respiration + posture null when the feed omits them (never fabricated)", () => {
     const s = applyMessage(fresh(), roomActivity(), scene);
     expect(s.hud.respiration).toBeNull();
     expect(s.hud.posture).toBeNull();
@@ -92,6 +92,29 @@ describe("HUD model", () => {
     expect(s.hud.confidence).toBeCloseTo(0.86);
     expect(s.hud.resident.label).toBe("A");
     expect(s.hud.resident.roomName).toBe("Kitchen");
+  });
+
+  it("surfaces the resident track's coarse vitals estimates (BAT-33) when present", () => {
+    const s = applyMessage(
+      fresh(),
+      roomActivity({
+        tracks: [
+          {
+            track_id: "A",
+            label: "A",
+            room: "kitchen",
+            confidence: 0.86,
+            identity_confidence: 0.9,
+            state: "normal",
+            respiration_bpm_estimate: 16,
+            posture_estimate: "upright",
+          },
+        ],
+      }),
+      scene,
+    );
+    expect(s.hud.respiration).toBe(16);
+    expect(s.hud.posture).toBe("upright");
   });
 
   it("reports no resident when none is located", () => {
