@@ -99,6 +99,27 @@ def test_writes_three_files_the_real_loaders_accept(tmp_path):
     assert circle.by_priority()[1].channels == ("sms",)
 
 
+# --- AC: the round-trip safety net rejects output validate() let through ------
+def test_roundtrip_rejects_loader_invalid_output(tmp_path, monkeypatch):
+    """The named feature ('refuses output the loader rejects'): a plan that
+    passes validate() but renders a file the real loader can't parse raises
+    OnboardingError and writes nothing — exercising the round-trip branch that
+    validate() can't pre-catch (PR #19 review #1)."""
+    plan = _valid_plan()
+    plan.validate()  # the plan itself is valid — validate() is satisfied
+    # Force the layout renderer to emit a node with no room: well-formed YAML,
+    # but the production loader (layout.py) raises on the missing key.
+    monkeypatch.setattr(
+        plan, "_layout_data",
+        lambda: {"home_id": "x", "name": "x",
+                 "rooms": [{"id": "kitchen", "name": "Kitchen"}],
+                 "nodes": [{"id": 1}]},  # missing 'room' -> loader rejects
+    )
+    with pytest.raises(onboard.OnboardingError, match="rejected by its loader"):
+        plan.write(tmp_path)
+    assert not list(tmp_path.iterdir())  # atomic on rejection — nothing written
+
+
 # --- AC: rejects invalid input with a clear message ---------------------------
 def test_rejects_bad_phone(tmp_path):
     plan = _valid_plan()
