@@ -57,6 +57,12 @@ class Reading(Base):
     format). `motion` holds the analog motion-energy; `confidence` holds the
     firmware presence score. "Latest" ordering uses the surrogate `id` (insert
     order), since ms-since-boot is not monotonic across node reboots.
+
+    `received_at` is the wall-clock epoch (seconds) when the row was persisted —
+    the only real timestamp on a reading, since `ts` resets on a node reboot.
+    The BAT-37 `/health` endpoint needs it to report per-node last-seen age and
+    the DB write rate. Nullable so rows written before this column existed (and
+    legacy DBs) still read back; such rows are simply treated as undated.
     """
 
     __tablename__ = "readings"
@@ -71,6 +77,7 @@ class Reading(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     fall_flag: Mapped[bool] = mapped_column(Boolean, nullable=False)
     occupancy: Mapped[int] = mapped_column(Integer, nullable=False)
+    received_at: Mapped[float | None] = mapped_column(Float, index=True, nullable=True)
 
 
 class Event(Base):

@@ -32,6 +32,7 @@ from . import __version__, db
 from .cascade import mode
 from .config import load_config
 from .engine import CascadeError, PolicyEngine
+from .logconfig import configure_logging
 from .notifier import make_notifier
 from .policy import load_registry
 from .twilio_webhook import auth_token, is_valid_signature
@@ -39,6 +40,7 @@ from .twilio_webhook import auth_token, is_valid_signature
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging("escalation")
     if getattr(app.state, "engine", None) is None:
         attach_engine(build_engine())
     # Recover pending cascades: re-drive any persisted deadline already passed.

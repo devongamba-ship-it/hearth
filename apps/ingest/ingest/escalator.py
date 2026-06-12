@@ -67,6 +67,8 @@ class NullEscalator:
         log.info(
             "CONFIRMED_FALL node=%s room=%s incident=%s (NullEscalator: not delivered)",
             escalation.node_id, escalation.room, escalation.incident_id,
+            extra={"event": "escalate_null", "node_id": escalation.node_id,
+                   "room": escalation.room, "incident_id": escalation.incident_id},
         )
         return True
 

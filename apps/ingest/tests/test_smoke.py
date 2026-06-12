@@ -9,14 +9,21 @@ from ingest.app import app
 from ingest.db import init_db, make_engine
 
 
-def test_health_endpoint_ok() -> None:
-    client = TestClient(app)
-    resp = client.get("/health")
+def test_health_endpoint_responds(session_factory) -> None:
+    # BAT-37 made /health a real status payload; an empty DB has no live nodes,
+    # so the verdict is "down". The shape + service/version contract still holds.
+    app.state.session_factory = session_factory
+    try:
+        resp = TestClient(app).get("/health")
+    finally:
+        del app.state.session_factory
     assert resp.status_code == 200
     body = resp.json()
-    assert body["status"] == "ok"
     assert body["service"] == "ingest"
     assert body["version"] == __version__
+    assert body["status"] == "down"  # nothing reporting yet
+    assert body["nodes"] == []
+    assert "aggregate" in body
 
 
 def test_init_db_is_idempotent_on_local_sqlite() -> None:

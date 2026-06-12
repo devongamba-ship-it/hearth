@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
@@ -33,10 +34,24 @@ from sqlalchemy import func, select
 from . import __version__, caregiver
 from .db import CONFIRMED_FALL, FallTransition, Reading, init_db, make_engine, make_session_factory
 from .detection import load_config
+from .health import build_health
+from .health import home_id as resolve_home_id
 from .layout import HomeLayout, load_layout
 from .live import LiveFeed, resolve_source
+from .logconfig import configure_logging
 
-app = FastAPI(title="Hearth Ingest", version=__version__)
+# Process start, captured at import so /health can report uptime. Tests that
+# need a deterministic uptime set ``app.state.started_at``.
+_STARTED_AT = time.time()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    configure_logging("ingest")
+    yield
+
+
+app = FastAPI(title="Hearth Ingest", version=__version__, lifespan=lifespan)
 
 _default_factory = {}
 
@@ -81,8 +96,26 @@ def _reading_dict(r: Reading) -> dict:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "service": "ingest", "version": __version__}
+def health(request: Request) -> dict:
+    """Real status payload (BAT-37): per-node staleness + an aggregate block, so
+    an operator can tell whether the running system is healthy without SSHing in.
+
+    ``status`` is ``ok`` (all nodes online), ``degraded`` (≥1 node stale), or
+    ``down`` (nothing reporting). Coarse status only — never a raw reading."""
+    factory = _session_factory(request)
+    now = _now(request)
+    started = getattr(request.app.state, "started_at", _STARTED_AT)
+    layout = _layout(request)
+    with factory() as session:
+        return build_health(
+            session,
+            now=now,
+            version=__version__,
+            config=_config(request),
+            layout=layout,
+            uptime_secs=now - started,
+            home=resolve_home_id(layout),
+        )
 
 
 @app.get("/api/nodes")

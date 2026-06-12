@@ -57,6 +57,10 @@ rejected unless their `X-Twilio-Signature` validates.
 - `HEARTH_ESCALATION_DB_URL` — SQLite URL (default `sqlite:///escalation.db`).
 - `ESCALATION_MODE` — `dry_run` (default) or `live`.
 - Live mode env: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`.
+- `HEARTH_LOG_FORMAT` — `json` (prod, one structured JSON object per line) or
+  `text` (dev, default); level via `HEARTH_LOG_LEVEL` (default `INFO`). Log lines
+  carry coarse context (`event`, `incident_id`, `room`, `status`) — never raw
+  readings or secrets (BAT-37).
 
 ## Endpoints
 
