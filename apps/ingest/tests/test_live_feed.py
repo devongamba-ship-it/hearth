@@ -22,6 +22,7 @@ from ingest.live import (
     DROPOUT_SECS,
     DWELL_SECS,
     RESP_MIN_SAMPLES,
+    WINDOW_SECS,
     LiveFeed,
     activity_index,
     posture_estimate,
@@ -357,6 +358,44 @@ def test_respiration_estimate_within_2bpm_after_smoothing_window(session_factory
     resp = resident["respiration_bpm_estimate"]
     assert isinstance(resp, int)
     assert abs(resp - 15) <= 2
+
+
+def test_respiration_estimate_is_smoothed_not_a_single_reading(session_factory):
+    """PR #13 review nit: the published estimate is the window mean, so a single
+    wildly-off sample barely moves it — proving the smoothing, not just that one
+    reading lands in a wide band."""
+    clock = FakeClock(0)
+    feed = _feed(session_factory, clock)
+    for t in range(RESP_MIN_SAMPLES + 2):
+        _persist(session_factory, 1, ts=1000 + t, breath=15.0)
+        messages = feed.tick()
+    assert _resident(messages)["respiration_bpm_estimate"] == 15
+
+    _persist(session_factory, 1, ts=2000, breath=45.0)  # one outlier
+    messages = feed.tick()
+    assert abs(_resident(messages)["respiration_bpm_estimate"] - 15) <= 1
+
+
+def test_respiration_ages_out_when_breath_lock_lost(session_factory):
+    """PR #13 review concern #1: a node that keeps reporting presence but loses
+    its breathing lock (breathing=0) must let the respiration estimate age out to
+    absent within a window — not republish the last good mean forever."""
+    clock = FakeClock(0)
+    feed = _feed(session_factory, clock)
+    for t in range(RESP_MIN_SAMPLES + 2):  # warm up a steady lock
+        _persist(session_factory, 1, ts=1000 + t, breath=15.0)
+        messages = feed.tick()
+    assert _resident(messages)["respiration_bpm_estimate"] == 15
+
+    for t in range(WINDOW_SECS):  # presence persists, breath lock gone
+        _persist(session_factory, 1, ts=2000 + t, breath=0.0)
+        messages = feed.tick()
+    assert "respiration_bpm_estimate" not in _resident(messages)
+
+    for t in range(2):  # lock returns -> estimate comes back
+        _persist(session_factory, 1, ts=3000 + t, breath=15.0)
+        messages = feed.tick()
+    assert _resident(messages)["respiration_bpm_estimate"] == 15
 
 
 def test_posture_upright_during_normal_scenario(session_factory):

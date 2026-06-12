@@ -98,7 +98,7 @@ class _NodeSnapshot:
 
     __slots__ = (
         "reading_id", "motion", "presence", "occupancy", "confidence",
-        "window", "breath_window",
+        "window", "breath_window", "breath_stale",
     )
 
     def __init__(self) -> None:
@@ -111,12 +111,21 @@ class _NodeSnapshot:
         # Breathing-rate samples, same rolling window. Only samples taken while
         # the node reported presence with a valid (> 0) breathing lock land here.
         self.breath_window: deque[float] = deque(maxlen=WINDOW_SECS)
+        # Fresh packets seen since the last valid breath sample. The deque only
+        # evicts on append, so without this a node that keeps sending packets
+        # with the breath lock lost (presence=1, breathing=0 — plausible during
+        # vigorous motion) would republish its last good mean forever. Once the
+        # lock has been gone a full window, the estimate must age out to absent.
+        self.breath_stale = 0
 
     def rolling_motion(self) -> float:
         return sum(self.window) / len(self.window) if self.window else 0.0
 
     def rolling_breathing(self) -> float | None:
-        if not self.breath_window:
+        # Stale: the breath lock has been gone for a full window — the window
+        # still holds old samples (deque evicts only on append), so report
+        # absent rather than a number sourced from a dead signal.
+        if self.breath_stale >= WINDOW_SECS or not self.breath_window:
             return None
         return sum(self.breath_window) / len(self.breath_window)
 
@@ -273,8 +282,13 @@ class LiveFeed:
                 # Breathing feeds the respiration estimate. Only count a sample
                 # when the node had presence and a valid (> 0) breathing lock —
                 # an empty room or a dropped lock must not drag the mean down.
+                # Track ticks since the last valid lock so a long-lost lock ages
+                # the estimate out to absent instead of freezing the last mean.
                 if r.presence and r.breathing_bpm > 0:
                     snap.breath_window.append(r.breathing_bpm)
+                    snap.breath_stale = 0
+                else:
+                    snap.breath_stale += 1
                 self._last_seen_at[node_id] = now
                 self._dropped.discard(node_id)
 
