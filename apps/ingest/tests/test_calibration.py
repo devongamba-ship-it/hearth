@@ -215,3 +215,97 @@ def test_lower_threshold_resolves_sit_down_as_near_fall():
     labels = {v.gt.event: v.label for v in verdicts}
     assert labels["near_fall"] == REPORT.NEAR_FALL  # no longer a false confirm
     assert labels["fall"] == REPORT.TP              # real fall still caught
+
+
+# -- the DB bridge (the "testable before hardware" join, PR #15 review #1) ----
+
+
+def test_db_bridge_anchors_then_loads_readings(tmp_path):
+    """anchors_from_transitions computes the per-node boot→wall median; an
+    override wins for a transition-less node; load_readings re-stamps
+    wall = anchor + ts/1000 and drops readings on unanchored nodes."""
+    engine = db.make_engine(f"sqlite:///{tmp_path / 'cal.db'}")
+    db.init_db(engine)
+    sf = db.make_session_factory(engine)
+
+    with sf() as s:
+        # Node 1 produced two transitions. anchor = median(at - reading_ts/1000):
+        #   1000.5 - 0.5 = 1000.0 ;  1002.5 - 1.5 = 1001.0  -> median 1000.5
+        s.add(db.FallTransition(incident_id="i1", node_id=1, reading_ts=500, at=1000.5,
+                                from_state="NORMAL", to_state="SUSPECTED",
+                                kind="transition", reason=None, features=None))
+        s.add(db.FallTransition(incident_id="i1", node_id=1, reading_ts=1500, at=1002.5,
+                                from_state="SUSPECTED", to_state="PROBABLE",
+                                kind="transition", reason=None, features=None))
+        # Node 1 reading (anchorable); node 2 reading (no transition -> unanchored).
+        s.add(db.Reading(node_id=1, ts=500, presence=True, motion=1500.0,
+                         breathing_bpm=15.0, hr_bpm=72.0, confidence=0.9,
+                         fall_flag=False, occupancy=1))
+        s.add(db.Reading(node_id=2, ts=2000, presence=True, motion=800.0,
+                         breathing_bpm=14.0, hr_bpm=70.0, confidence=0.8,
+                         fall_flag=False, occupancy=1))
+        s.commit()
+
+    assert REPORT.anchors_from_transitions(sf) == {1: 1000.5}  # median of the two
+
+    # An --anchor override supplies the boot→wall for a transition-less node.
+    overridden = REPORT.anchors_from_transitions(sf, overrides={2: 5000.0})
+    assert overridden == {1: 1000.5, 2: 5000.0}
+
+    # Only anchored nodes load; wall is re-stamped from the anchor.
+    rows = REPORT.load_readings(sf, {1: 1000.5})
+    assert [r.node_id for r in rows] == [1]              # node 2 dropped (no anchor)
+    assert rows[0].wall == 1000.5 + 500 / 1000.0        # 1001.0
+
+    both = REPORT.load_readings(sf, {1: 1000.5, 2: 5000.0})
+    assert {r.node_id for r in both} == {1, 2}
+    node2 = next(r for r in both if r.node_id == 2)
+    assert node2.wall == 5000.0 + 2000 / 1000.0         # 5002.0
+
+
+# -- false negatives: the verdict + the 5:1 cost (PR #15 review #2) -----------
+
+
+def _missed_fall_node(node_id, base_wall, *, still_motion):
+    """A real fall whose post-impact 'stillness' stays at ``still_motion`` — high
+    enough to read as MOVING under a given threshold, so the machine never
+    confirms it. The miss calibration exists to catch."""
+    rows, ts = [], 0
+    for _ in range(30):
+        rows.append(_row(node_id, ts, 1500.0, False, base_wall + ts / 1000.0))
+        ts += 1000
+    rows.append(_row(node_id, ts, 9000.0, True, base_wall + ts / 1000.0))  # impact
+    ts += 1000
+    for _ in range(90):
+        rows.append(_row(node_id, ts, still_motion, False, base_wall + ts / 1000.0))
+        ts += 1000
+    return rows
+
+
+def test_missed_real_fall_is_labeled_fn():
+    # Post-impact motion 500 stays above the default 200 stillness threshold, so
+    # the machine reads "still moving" and never confirms — a missed real fall.
+    readings = _missed_fall_node(1, 1000.0, still_motion=500.0)
+    config = DetectionConfig(rooms={1: "living"})
+    outcomes = REPORT.replay_outcomes(readings, config)
+    assert not any(o.kind == db.CONFIRMED_FALL for o in outcomes)
+    gt = [REPORT.GTEvent(ts=1030.0, event="fall", room="living")]
+    verdict = REPORT.correlate(gt, outcomes, config)[0]
+    assert verdict.label == REPORT.FN
+
+
+def test_fn_scores_strictly_worse_than_an_equal_fp():
+    """The 5:1 policy the recommendation hinges on: one missed fall costs more
+    than one false alarm, so the sweep never trades a real miss for a cleared FP."""
+    assert REPORT.SweepWeights().fn > REPORT.SweepWeights().fp
+    readings, gt, config = _scenario()
+    # At stillness 10 the real fall (still=20) reads as moving -> missed -> FN, fp=0.
+    # At stillness 200 the sit-down (still=150) false-confirms -> FP, fn=0.
+    results = REPORT.sweep(readings, gt, config,
+                           stillness_grid=[10.0, 200.0], confirm_grid=[20])
+    by = {(c.stillness_threshold, c.confirm_stillness_secs): c for c in results}
+    miss, false_alarm = by[(10.0, 20)], by[(200.0, 20)]
+    assert (miss.fn, miss.fp) == (1, 0)
+    assert (false_alarm.fn, false_alarm.fp) == (0, 1)
+    assert miss.score > false_alarm.score                 # FN costs strictly more
+    assert REPORT.recommend(results) is false_alarm       # never recommend the miss
