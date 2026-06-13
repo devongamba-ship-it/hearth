@@ -25,9 +25,12 @@ message):
   flip from sim to ESP32 nodes visibly confirms itself). Additive and coarse — a
   configured label, not a raw reading; older clients ignore the unknown field.
 
-  Each track may also carry two **optional** coarse vitals estimates (BAT-33),
-  derived from the same persisted breathing/motion aggregates — never raw
-  readings:
+  The known **resident** track may also carry two **optional** coarse vitals
+  estimates (BAT-33), derived from the same persisted breathing/motion
+  aggregates — never raw readings. Anonymous ``guest-N`` tracks never carry
+  them: the estimates are room-level, so attaching them to a guest would
+  attribute one person's vitals to another (BAT-35; see ``_tracks``). They are
+  withheld, not misattributed, until per-target sensing genuinely lands:
 
     * ``respiration_bpm_estimate`` — integer breaths-per-minute, smoothed over
       the rolling ``WINDOW_SECS`` window. Absent until the window has warmed up
@@ -435,6 +438,18 @@ class LiveFeed:
 
         # Unrecognised extra targets become anonymous guest tracks: every extra
         # occupant in the primary room, and every occupant of the other rooms.
+        #
+        # Identity-honesty invariant (BAT-35): guest tracks carry NO vitals
+        # estimates. _vitals_fields is room-level — every track in a room would
+        # be handed the *same* respiration/posture. For the lone resident track
+        # that is a fair attribution; for a guest co-located with the resident it
+        # is a lie: a guest standing next to a fallen resident would otherwise
+        # read posture_estimate="floor" and inherit the resident's breathing.
+        # RuView CSI does not separate vitals per target at room level today, so
+        # we withhold rather than misattribute (option 1) — guests carry presence
+        # + room + state only. Per-target attribution is deferred until/if the
+        # sensing model can genuinely tell two people's vitals apart; only then
+        # may a guest track carry its own (not the room's) estimates.
         guest_n = 0
         for rid in sorted(occupied, key=self._room_order):
             extra = room_meta[rid]["occupancy"] - (1 if rid == primary else 0)
@@ -447,7 +462,6 @@ class LiveFeed:
                     "confidence": round(room_meta[rid]["confidence"], 2),
                     "identity_confidence": 0.0,
                     "state": "guest",
-                    **self._vitals_fields(room_meta[rid]),
                 })
         return tracks, False
 
