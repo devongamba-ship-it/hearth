@@ -263,6 +263,20 @@ def _coactive_fraction(anchor_times: list[float], other_times: list[float], wind
     return matched / len(anchor_times)
 
 
+def _chance_fraction(other_count: int, window: float, span: float) -> float:
+    """Co-active fraction expected by temporal density alone — no adjacency.
+
+    A node firing ``other_count`` times over ``span`` seconds blankets roughly
+    ``other_count * 2*window`` seconds with ±window match bands, so a random
+    anchor firing lands inside one by chance at that rate. Clamped to 1.0: a node
+    firing densely enough to cover the whole window (a hallway/hub node, or
+    someone lingering) explains ANY coincidence, so it earns no adjacency.
+    """
+    if span <= 0:
+        return 0.0
+    return min(1.0, other_count * 2.0 * window / span)
+
+
 def discover_graph(
     session,
     *,
@@ -280,6 +294,11 @@ def discover_graph(
     """
     reports = _load_neighbor_reports(session)
     if reports:
+        # KNOWN v2 BOUNDARY (PR #24 review #2): any neighbor reports fully replace
+        # co-activation. Inert in v1 (no firmware emits reports yet). When a real
+        # source lands with PARTIAL coverage, switch to overriding only the pairs
+        # a report actually covers and keep co-activation for the rest, so an
+        # unreported node doesn't silently drop to isolated.
         return graph_from_reports(reports)
 
     threshold = (
@@ -291,17 +310,27 @@ def discover_graph(
     nodes = _all_nodes(session) | set(firings)
 
     firing_nodes = sorted(n for n in nodes if firings.get(n))
+    # Observation span: the chance baseline below needs how long we watched, so a
+    # densely-firing node's expected coincidence rate can be computed and removed.
+    all_times = [t for n in firing_nodes for t in firings[n]]
+    span = (max(all_times) - min(all_times)) if len(all_times) >= 2 else 0.0
     edges: list[tuple[int, int, float]] = []
     for i, a in enumerate(firing_nodes):
         for b in firing_nodes[i + 1 :]:
             ta, tb = firings[a], firings[b]
-            # Anchor on the node with fewer firings so the weight stays in 0..1.
+            # Anchor on the node with fewer firings so the raw fraction is in 0..1.
             if len(ta) <= len(tb):
-                frac = _coactive_fraction(ta, tb, window_secs)
+                observed = _coactive_fraction(ta, tb, window_secs)
+                chance = _chance_fraction(len(tb), window_secs, span)
             else:
-                frac = _coactive_fraction(tb, ta, window_secs)
-            if frac > 0.0:
-                edges.append((a, b, round(frac, 4)))
+                observed = _coactive_fraction(tb, ta, window_secs)
+                chance = _chance_fraction(len(ta), window_secs, span)
+            # Weight = lift above chance, normalised to 0..1. A hub that blankets
+            # the timeline (chance -> 1) explains any coincidence, so its spurious
+            # edges collapse to 0; a genuine sparse-pair match keeps full weight.
+            weight = 0.0 if chance >= 1.0 else max(0.0, observed - chance) / (1.0 - chance)
+            if weight > 0.0:
+                edges.append((a, b, round(weight, 4)))
 
     edges.sort()
     suggested = tuple((a, b) for a, b, w in edges if w >= DEFAULT_LINK_CONFIDENCE)

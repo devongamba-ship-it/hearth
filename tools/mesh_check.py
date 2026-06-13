@@ -46,6 +46,11 @@ def check(
     """
     with session_factory() as session:
         graph = discover_graph(session, window_secs=window_secs)
+    # DELIBERATE (PR #24 review #3): mesh_check does NOT restrict discovery to the
+    # layout's node set (unlike onboarding's `among=` pre-fill). Surfacing a node
+    # that's reporting but isn't in layout.yaml is exactly the relocation/unknown-
+    # node signal an operator wants here — "a node showed up that you didn't
+    # configure" — so it's intentionally allowed to appear as drift.
     drifts = detect_drift(layout.links, graph, min_confidence=min_confidence)
     return graph, drifts
 

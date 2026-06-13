@@ -99,6 +99,39 @@ def test_isolated_motion_makes_no_spurious_edges(session_factory):
     assert 5 in graph.nodes and 6 in graph.nodes
 
 
+def test_hub_node_makes_no_spurious_edges(session_factory):
+    # PR #24 review #1: a continuously-firing hub (node 1 fires every second
+    # across the whole window) coincides with every sparse node by temporal
+    # density, not adjacency. The chance baseline must subtract that out.
+    for t in range(100, 161):                  # node 1: a hub, 61 firings
+        _fire(session_factory, 1, float(t))
+    for t in (105.0, 125.0, 145.0):            # node 5: sparse, unrelated
+        _fire(session_factory, 5, t)
+    graph = _discover(session_factory)
+
+    # Every node-5 firing has a node-1 firing within ±window — but that is
+    # density, not adjacency, so the corrected weight is zero: no false edge.
+    assert graph.weight(1, 5) == 0.0
+    assert (1, 5) not in set(graph.suggested_links)
+    assert (5, 1) not in set(graph.suggested_links)
+    assert graph.is_isolated(5)
+
+
+def test_genuine_adjacency_survives_a_nearby_hub(session_factory):
+    # The correction must not erase a real edge: a true 3↔2 pair still links even
+    # while a hub (node 1) fires throughout — chance is subtracted, lift remains.
+    for t in range(100, 161):
+        _fire(session_factory, 1, float(t))
+    for base in (120.0, 130.0, 140.0):
+        _fire(session_factory, 3, base)
+        _fire(session_factory, 2, base + 0.4)
+    graph = _discover(session_factory)
+
+    assert graph.weight(3, 2) >= 0.5         # genuine adjacency preserved
+    assert (2, 3) in set(graph.suggested_links)
+    assert graph.weight(1, 5) == 0.0 or (1, 5) not in set(graph.suggested_links)
+
+
 def test_lone_node_among_a_pair_is_reported_isolated(session_factory):
     _walk(session_factory)  # 1↔4 and 3↔2
     _fire(session_factory, 9, 800.0)  # node 9 fires once, alone
