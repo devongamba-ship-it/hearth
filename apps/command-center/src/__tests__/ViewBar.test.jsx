@@ -12,9 +12,9 @@ function setup(props = {}) {
 }
 
 describe("ViewBar", () => {
-  it("renders the three views and three figure styles", () => {
+  it("renders the four views and three figure styles", () => {
     setup();
-    for (const v of ["Bird's eye", "Ground", "Orbit"]) {
+    for (const v of ["Bird's eye", "Ground", "Orbit", "Field"]) {
       expect(screen.getByRole("button", { name: v })).toBeInTheDocument();
     }
     for (const s of ["Capsule", "Column", "Marker"]) {

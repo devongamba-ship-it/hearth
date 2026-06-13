@@ -12,6 +12,13 @@ import { FLOOR_SIZE } from "./layout.js";
 export const VIEWS = ["birdseye", "ground", "orbit", "field"];
 export const DEFAULT_VIEW = "birdseye";
 
+// The sensing-field particle grid is drawn ONLY in the Field view (it is dense
+// and view-specific). Pure predicate so the gating decision is unit-testable
+// without a WebGL context (the renderer just applies it).
+export function shouldShowField(view) {
+  return view === "field";
+}
+
 export const GROUND_EYE_HEIGHT = 1.4; // metres — camera height in ground view
 const ORBIT_RADIUS = FLOOR_SIZE * 0.85;
 const ORBIT_HEIGHT = FLOOR_SIZE * 0.55;

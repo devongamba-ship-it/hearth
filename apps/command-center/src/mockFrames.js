@@ -162,7 +162,10 @@ function kitchenWalkScenario() {
     const v = 0.25 + 0.09 * Math.cos(t * 0.55);
     const tracks = present
       ? [{ track_id: "A", label: "A", room: "kitchen", u, v, confidence: score[t],
-           identity_confidence: 0.9, state: heat >= 10 ? "upright" : "seated" }]
+           // state stays in the documented enum {normal, fall_watch, guest};
+           // posture is NOT a track state (single-node data can't infer it) and
+           // the HUD renders state verbatim, so we keep it honest as "normal".
+           identity_confidence: 0.9, state: "normal" }]
       : [];
     return [activity(t, "kitchen", tracks, { heat, ambient: 0 })];
   });

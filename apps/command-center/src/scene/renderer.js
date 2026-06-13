@@ -20,7 +20,7 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { FLOOR_SIZE } from "../lib/layout.js";
-import { cameraFor } from "../lib/views.js";
+import { cameraFor, shouldShowField } from "../lib/views.js";
 import { interpolateFigures } from "../lib/interp.js";
 import { FIGURE_RADIUS, FALL_COLOR } from "../lib/figures.js";
 
@@ -130,7 +130,7 @@ export function createScene(container, opts = {}) {
     animateRipples(ripples);
     animateLinks(linkObjs, latestRoomActivity);
     if (field) {
-      field.points.visible = view === "field"; // gated to the Field view
+      field.points.visible = shouldShowField(view); // gated to the Field view
       if (field.points.visible) updateField(field, linkObjs);
     }
     applyCamera(camera, view, orbitAngle, followTarget);

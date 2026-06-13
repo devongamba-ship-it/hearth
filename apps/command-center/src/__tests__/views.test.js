@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { cameraFor, VIEWS, GROUND_EYE_HEIGHT } from "../lib/views.js";
+import { cameraFor, VIEWS, GROUND_EYE_HEIGHT, shouldShowField } from "../lib/views.js";
+
+describe("shouldShowField (the particle grid is gated to the Field view)", () => {
+  it("is true only for the field view", () => {
+    expect(shouldShowField("field")).toBe(true);
+    for (const v of ["birdseye", "ground", "orbit", "anything"]) {
+      expect(shouldShowField(v)).toBe(false);
+    }
+  });
+});
 
 describe("cameraFor", () => {
   it("exposes the camera views", () => {
