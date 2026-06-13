@@ -16,12 +16,26 @@
 //     fall, and the capsule rotates prone to the floor plane.
 
 import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { FLOOR_SIZE } from "../lib/layout.js";
 import { cameraFor } from "../lib/views.js";
 import { interpolateFigures } from "../lib/interp.js";
 import { FIGURE_RADIUS, FALL_COLOR } from "../lib/figures.js";
 
 const BG = 0x05070d;
+
+// Sensing-field particle grid: a cloud of points across the floor that rises (Y)
+// and colors where the WiFi links are disturbed. 1 node = a glowing corridor;
+// more nodes = the disturbance localizes where lit links cross. Driven by the
+// same per-link energy as the sensing rays (animateLinks), so it needs no extra
+// data — it blooms automatically as nodes come online.
+const FIELD_GX = 78, FIELD_GY = 54;  // denser grid (only updated in the Field view)
+const FIELD_SIGMA = 0.85;   // link band half-width, world units
+const FIELD_HEIGHT = 1.5;   // max disruption extrusion along +Y
+const FIELD_SHIMMER = 0.12; // gentle vertical shimmer (lower = calmer/tighter)
+const FIELD_TRAIL = 0.965;  // per-point energy decay -> fading motion trail
 
 export function createScene(container, opts = {}) {
   const intervalMs = opts.intervalMs ?? 1000;
@@ -49,7 +63,20 @@ export function createScene(container, opts = {}) {
   const figureGroup = new THREE.Group();
   scene.add(roomGroup, nodeGroup, figureGroup);
 
+  // Post-processing: selective bloom so emissive nodes / figures / the hot field
+  // glow. The threshold keeps the dim grid + room tiles from blooming.
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const bloom = new UnrealBloomPass(
+    new THREE.Vector2(container.clientWidth || 800, container.clientHeight || 600),
+    0.7, 0.5, 0.6, // strength, radius, threshold
+  );
+  composer.addPass(bloom);
+
   const ripples = [];
+  const linkObjs = [];
+  let latestRoomActivity = new Map();
+  let field = null;
   let geometryBuilt = false;
 
   // Interpolation state: ease figures from prev → target across each 1 Hz tick.
@@ -65,7 +92,8 @@ export function createScene(container, opts = {}) {
   function setGeometry(sceneGeo) {
     latestScene = sceneGeo;
     rebuildRooms(roomGroup, sceneGeo);
-    rebuildNodes(nodeGroup, sceneGeo, ripples);
+    rebuildNodes(nodeGroup, sceneGeo, ripples, linkObjs);
+    field = buildField(scene, sceneGeo);
     geometryBuilt = true;
   }
 
@@ -73,7 +101,10 @@ export function createScene(container, opts = {}) {
     if (ui.view) view = ui.view;
     if (ui.style) style = ui.style;
     if (ui.scene && !geometryBuilt) setGeometry(ui.scene);
-    if (state?.rooms && latestScene) tintRooms(roomGroup, latestScene, state.rooms);
+    if (state?.rooms) {
+      latestRoomActivity = new Map(state.rooms.map((r) => [r.room, r.activity_index ?? 0]));
+      if (latestScene) tintRooms(roomGroup, latestScene, state.rooms);
+    }
     if (state) {
       prevFigures = sampleCurrent(prevFigures, targetFigures, elapsedAlpha());
       targetFigures = state.figures || [];
@@ -97,8 +128,13 @@ export function createScene(container, opts = {}) {
     if (resident) followTarget = resident.position;
     orbitAngle += 0.0025;
     animateRipples(ripples);
+    animateLinks(linkObjs, latestRoomActivity);
+    if (field) {
+      field.points.visible = view === "field"; // gated to the Field view
+      if (field.points.visible) updateField(field, linkObjs);
+    }
     applyCamera(camera, view, orbitAngle, followTarget);
-    renderer.render(scene, camera);
+    composer.render();
   }
   loop();
 
@@ -106,6 +142,7 @@ export function createScene(container, opts = {}) {
     const w = container.clientWidth || 800;
     const h = container.clientHeight || 600;
     renderer.setSize(w, h);
+    composer.setSize(w, h);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   }
@@ -115,6 +152,7 @@ export function createScene(container, opts = {}) {
   function dispose() {
     cancelAnimationFrame(raf);
     window.removeEventListener("resize", onResize);
+    composer.dispose?.();
     renderer.dispose();
     if (renderer.domElement.parentNode === container) {
       container.removeChild(renderer.domElement);
@@ -144,9 +182,11 @@ function buildFloor(scene) {
   scene.add(major);
 }
 
-function rebuildNodes(group, sceneGeo, ripples) {
+function rebuildNodes(group, sceneGeo, ripples, linkObjs) {
   clear(group);
   ripples.length = 0;
+  linkObjs.length = 0;
+  const nodeRoom = new Map(sceneGeo.nodes.map((n) => [n.id, n.room]));
   const nodeMat = new THREE.MeshStandardMaterial({
     color: 0x39d0ff,
     emissive: 0x1f6f9c,
@@ -172,15 +212,145 @@ function rebuildNodes(group, sceneGeo, ripples) {
     group.add(ring);
     ripples.push(ring);
   }
-  // floor-level link lines between nodes that hear each other
-  const linkMat = new THREE.LineBasicMaterial({ color: 0x2a5f86, transparent: true, opacity: 0.6 });
+  // Floor-level link lines = the WiFi sensing paths between nodes that hear each
+  // other. Each link gets its OWN material (animated per-link) plus a travelling
+  // "energy" bead, so when a room a link touches goes active the link glows and
+  // fires a bead along its length — you literally see which paths sensed motion.
   for (const l of sceneGeo.links) {
-    const geo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(l.from.x, 0.02, l.from.z),
-      new THREE.Vector3(l.to.x, 0.02, l.to.z),
-    ]);
-    group.add(new THREE.Line(geo, linkMat));
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(l.from.x, 0.04, l.from.z),
+        new THREE.Vector3(l.to.x, 0.04, l.to.z),
+      ]),
+      new THREE.LineBasicMaterial({ color: 0x2a5f86, transparent: true, opacity: 0.22 }),
+    );
+    group.add(line);
+    const bead = new THREE.Mesh(
+      new THREE.SphereGeometry(0.09, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0x7fe6ff, transparent: true, opacity: 0 }),
+    );
+    bead.position.set(l.from.x, 0.08, l.from.z);
+    group.add(bead);
+    linkObjs.push({
+      line, bead, from: l.from, to: l.to,
+      roomA: nodeRoom.get(l.a), roomB: nodeRoom.get(l.b),
+      energy: 0, t: (l.a * 0.31) % 1,
+    });
   }
+}
+
+// WiFi sensing rays: drive each link's brightness + a travelling energy bead from
+// the activity of the two rooms it connects. A quiet link sits at a faint baseline;
+// a link touching an active room glows and fires a bead along its length — the
+// "show me which rays picked up the activity" view.
+function animateLinks(linkObjs, roomActivity) {
+  for (const lk of linkObjs) {
+    const a = (roomActivity.get(lk.roomA) ?? 0) / 100;
+    const b = (roomActivity.get(lk.roomB) ?? 0) / 100;
+    const target = Math.max(a, b); // 0..1
+    lk.energy += (target - lk.energy) * 0.12; // ease toward the room activity
+    const e = lk.energy;
+    lk.line.material.opacity = 0.22 + 0.65 * e;
+    lk.line.material.color.setRGB(0.16 + 0.55 * e, 0.37 + 0.45 * e, 0.52 + 0.45 * e);
+    lk.t = (lk.t + 0.012 + 0.05 * e) % 1; // bead travels faster as energy rises
+    lk.bead.position.set(
+      lk.from.x + (lk.to.x - lk.from.x) * lk.t,
+      0.08,
+      lk.from.z + (lk.to.z - lk.from.z) * lk.t,
+    );
+    lk.bead.material.opacity = e > 0.04 ? 0.9 * e : 0;
+    lk.bead.scale.setScalar(0.6 + 1.3 * e);
+  }
+}
+
+// -- sensing field (3D particle tomography) ----------------------------------
+// A point cloud across the floor. Each frame, every point's height (+Y) and
+// color are recomputed from the link energies: ambient when calm, rising and
+// warming where a disturbed link passes near. One node = a glowing corridor;
+// with more nodes the disturbance localizes where lit links cross. Same energy
+// source as the sensing rays, so it blooms automatically as nodes come online.
+
+function buildField(scene, sceneGeo) {
+  const half = FLOOR_SIZE / 2;
+  const n = FIELD_GX * FIELD_GY;
+  const positions = new Float32Array(n * 3);
+  const colors = new Float32Array(n * 3);
+  const base = new Float32Array(n * 2); // x,z per point
+  const level = new Float32Array(n);    // decayed energy per point (motion trail)
+  let i = 0;
+  for (let gx = 0; gx < FIELD_GX; gx++) {
+    for (let gy = 0; gy < FIELD_GY; gy++) {
+      const x = -half + ((gx + 0.5) / FIELD_GX) * FLOOR_SIZE;
+      const z = -half + ((gy + 0.5) / FIELD_GY) * FLOOR_SIZE;
+      positions[i * 3] = x;
+      positions[i * 3 + 1] = 0.05;
+      positions[i * 3 + 2] = z;
+      colors[i * 3] = 0.05; colors[i * 3 + 1] = 0.11; colors[i * 3 + 2] = 0.2;
+      base[i * 2] = x; base[i * 2 + 1] = z;
+      i++;
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.17, vertexColors: true, transparent: true, opacity: 0.92,
+    depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true,
+  });
+  const points = new THREE.Points(geo, mat);
+  scene.add(points);
+  return { points, base, positions, colors, level, t: 0 };
+}
+
+function segDist2D(px, pz, ax, az, bx, bz) {
+  const vx = bx - ax, vz = bz - az, wx = px - ax, wz = pz - az;
+  const t = Math.max(0, Math.min(1, (wx * vx + wz * vz) / (vx * vx + vz * vz || 1e-6)));
+  return Math.hypot(px - (ax + t * vx), pz - (az + t * vz));
+}
+
+// dark blue (calm) -> teal -> amber -> red (hot), written into out[0..2].
+function fieldHeat(t, out) {
+  if (t < 0.04) { out[0] = 0.05; out[1] = 0.11; out[2] = 0.2; return; }
+  const u = Math.min(1, (t - 0.04) / 0.96);
+  if (u < 0.5) {
+    const k = u / 0.5;
+    out[0] = 0.13 + (0.96 - 0.13) * k;
+    out[1] = 0.83 + (0.62 - 0.83) * k;
+    out[2] = 0.77 + (0.04 - 0.77) * k;
+  } else {
+    const k = (u - 0.5) / 0.5;
+    out[0] = 0.96 + (1.0 - 0.96) * k;
+    out[1] = 0.62 + (0.23 - 0.62) * k;
+    out[2] = 0.04 + (0.23 - 0.04) * k;
+  }
+}
+
+const _fc = [0, 0, 0];
+function updateField(field, linkObjs) {
+  field.t += 0.04;
+  const { base, positions, colors, level, points } = field;
+  const sig2 = FIELD_SIGMA * FIELD_SIGMA;
+  const n = base.length / 2;
+  for (let i = 0; i < n; i++) {
+    const x = base[i * 2], z = base[i * 2 + 1];
+    let inten = 0;
+    for (const lk of linkObjs) {
+      if (lk.energy < 0.02) continue;
+      const d = segDist2D(x, z, lk.from.x, lk.from.z, lk.to.x, lk.to.z);
+      inten += lk.energy * Math.exp(-(d * d) / sig2);
+    }
+    // Fading motion trail: a point holds its glow and decays, so a moving
+    // disturbance leaves a wake instead of snapping on and off.
+    level[i] = Math.max(inten, level[i] * FIELD_TRAIL);
+    let lv = 0.03 + level[i]; // + ambient floor
+    if (lv > 1) lv = 1;
+    const shimmer = 1 + FIELD_SHIMMER * Math.sin(field.t + i * 0.7) * lv;
+    positions[i * 3 + 1] = 0.05 + lv * FIELD_HEIGHT * shimmer;
+    fieldHeat(lv, _fc);
+    colors[i * 3] = _fc[0]; colors[i * 3 + 1] = _fc[1]; colors[i * 3 + 2] = _fc[2];
+  }
+  points.geometry.attributes.position.needsUpdate = true;
+  points.geometry.attributes.color.needsUpdate = true;
 }
 
 function animateRipples(ripples) {

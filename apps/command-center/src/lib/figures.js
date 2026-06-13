@@ -15,7 +15,7 @@
 // marker). A figure in `fall_watch` always renders red with a fast pulse,
 // regardless of style.
 
-import { roomCenter } from "./layout.js";
+import { roomCenter, pointToWorld } from "./layout.js";
 
 // The three presence styles from the canonical update. Defaults to capsule.
 export const FIGURE_STYLES = ["capsule", "column", "marker"];
@@ -86,11 +86,18 @@ export function tracksToFigures(tracks, scene) {
     ordered.forEach((t, i) => {
       const { dx, dz } = slotOffset(i, ordered.length);
       const fallen = t.state === "fall_watch";
+      // A track may carry an in-room position (u,v in the 0..1 layout square) when
+      // multi-node localization places it precisely; otherwise it anchors on the
+      // room centre + slot (single-node feeds are room-level only).
+      const position =
+        t.u != null && t.v != null
+          ? pointToWorld(t.u, t.v)
+          : { x: center.x + dx, z: center.z + dz };
       figures.push({
         id: String(t.track_id),
         label: t.label ?? String(t.track_id),
         room: roomId,
-        position: { x: center.x + dx, z: center.z + dz },
+        position,
         color: fallen ? FALL_COLOR : trackColor(t),
         baseColor: trackColor(t),
         confidence: t.confidence ?? 0,
