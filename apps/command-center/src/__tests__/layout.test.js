@@ -34,6 +34,24 @@ describe("layoutToScene", () => {
     expect(kitchen.center.z).toBeLessThan(0);
   });
 
+  it("uses explicit rect geometry + floor when a room provides them", () => {
+    const s = layoutToScene({
+      home_id: "h",
+      rooms: [{ id: "studio", name: "Studio", floor: 1, rect: { x: 0.1, y: 0.2, w: 0.6, h: 0.4 } }],
+      nodes: [{ id: 1, room: "studio", x: 0.4, y: 0.4, floor: 1 }],
+      links: [],
+    });
+    const studio = s.rooms[0];
+    expect(studio.floor).toBe(1);
+    // width/depth track the rect (0.6 x 0.4 of the floor), not a fixed tile
+    expect(studio.width).toBeCloseTo(0.6 * FLOOR_SIZE);
+    expect(studio.depth).toBeCloseTo(0.4 * FLOOR_SIZE);
+    // centre at the rect midpoint (0.4, 0.4)
+    expect(studio.center.u).toBeCloseTo(0.4);
+    expect(studio.center.v).toBeCloseTo(0.4);
+    expect(s.nodes[0].floor).toBe(1);
+  });
+
   it("resolves links to node endpoints, dropping unknown ids", () => {
     expect(scene.links).toHaveLength(mockLayout.links.length);
     for (const l of scene.links) {
