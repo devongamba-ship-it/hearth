@@ -118,6 +118,30 @@ class FallTransition(Base):
     features: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class LinkReport(Base):
+    """One observed mesh link from a node's neighbor report (BAT-44).
+
+    Forward-compatible source for mesh auto-discovery: if/when RuView (or our own
+    firmware) emits per-node neighbor reports, each ``{neighbor, rssi}`` entry is
+    persisted as a row here. ``mesh_graph.discover_graph`` prefers these measured
+    link strengths over co-activation inference when any rows are present, and
+    falls back to co-activation when the table is empty (v1: no hardware emits
+    them yet — the contract is defined and the source is stubbed).
+
+    Topology only: a directed ``(node_id -> neighbor_id)`` edge plus its ``rssi``
+    (dBm). No coordinates, no geometry. ``received_at`` is the wall-clock epoch
+    seconds the report was persisted (nullable, mirroring ``Reading``).
+    """
+
+    __tablename__ = "link_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    node_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    neighbor_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    rssi: Mapped[float] = mapped_column(Float, nullable=False)
+    received_at: Mapped[float | None] = mapped_column(Float, index=True, nullable=True)
+
+
 def make_engine(url: str | None = None):
     return create_engine(url or db_url(), future=True)
 
