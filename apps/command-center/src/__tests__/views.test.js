@@ -1,9 +1,26 @@
 import { describe, it, expect } from "vitest";
-import { cameraFor, VIEWS, GROUND_EYE_HEIGHT } from "../lib/views.js";
+import { cameraFor, VIEWS, GROUND_EYE_HEIGHT, shouldShowField } from "../lib/views.js";
+
+describe("shouldShowField (the particle grid is gated to the Field view)", () => {
+  it("is true only for the field view", () => {
+    expect(shouldShowField("field")).toBe(true);
+    for (const v of ["birdseye", "ground", "orbit", "anything"]) {
+      expect(shouldShowField(v)).toBe(false);
+    }
+  });
+});
 
 describe("cameraFor", () => {
-  it("exposes the three views", () => {
-    expect(VIEWS).toEqual(["birdseye", "ground", "orbit"]);
+  it("exposes the camera views", () => {
+    expect(VIEWS).toEqual(["birdseye", "ground", "orbit", "field"]);
+  });
+
+  it("field view is a low oblique orbit that frames the floor", () => {
+    const a = cameraFor("field", { orbitAngle: 0 });
+    const b = cameraFor("field", { orbitAngle: Math.PI });
+    expect(a.position).not.toEqual(b.position); // orbits
+    expect(a.position[1]).toBeGreaterThan(0);
+    expect(a.position[1]).toBeLessThan(cameraFor("orbit", { orbitAngle: 0 }).position[1]); // lower than orbit
   });
 
   it("bird's eye looks straight down from above the centre", () => {
@@ -16,7 +33,7 @@ describe("cameraFor", () => {
   it("ground view sits at eye height and tracks the target", () => {
     const target = { x: 3, z: -2 };
     const c = cameraFor("ground", { target, orbitAngle: 0 });
-    expect(c.position[1]).toBeCloseTo(GROUND_EYE_HEIGHT);
+    expect(c.position[1]).toBeCloseTo(GROUND_EYE_HEIGHT + 0.4); // just above eye line, pulled back
     expect(c.lookAt[0]).toBeCloseTo(target.x);
     expect(c.lookAt[2]).toBeCloseTo(target.z);
     // camera is offset from, but near, the resident

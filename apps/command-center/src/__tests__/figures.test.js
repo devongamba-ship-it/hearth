@@ -6,7 +6,7 @@ import {
   FIGURE_RADIUS,
   FIGURE_STYLES,
 } from "../lib/figures.js";
-import { layoutToScene } from "../lib/layout.js";
+import { layoutToScene, pointToWorld } from "../lib/layout.js";
 import { mockLayout } from "../mockFrames.js";
 
 const scene = layoutToScene(mockLayout);
@@ -35,6 +35,15 @@ describe("trackColor", () => {
 });
 
 describe("tracksToFigures", () => {
+  it("places a track at its in-room u/v when present (multi-node localization)", () => {
+    // The kitchen-walk capture carries u/v; the figure must sit at pointToWorld
+    // of those, not the room centre (figures.js u/v branch).
+    const here = pointToWorld(0.25, 0.25);
+    const [fig] = tracksToFigures([track({ room: "kitchen", u: 0.25, v: 0.25 })], scene);
+    expect(fig.position.x).toBeCloseTo(here.x);
+    expect(fig.position.z).toBeCloseTo(here.z);
+  });
+
   it("anchors a single track on its room centre", () => {
     const [fig] = tracksToFigures([track({ room: "kitchen" })], scene);
     const kitchen = scene.rooms.find((r) => r.id === "kitchen").center;

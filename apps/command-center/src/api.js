@@ -11,6 +11,9 @@ import { mockLayout, mockFrameStream } from "./mockFrames.js";
 const INGEST = import.meta.env.VITE_INGEST_BASE || "/ingest";
 export const USE_MOCK = import.meta.env.VITE_USE_MOCK === "1";
 export const DEFAULT_HOME = import.meta.env.VITE_HOME_ID || "rosewood";
+// Which mock scenario to replay in mock mode: "demo" (default scripted tour) or
+// "kitchen-walk" (real captured ESP32 data). Set VITE_MOCK_SCENARIO at dev start.
+export const MOCK_SCENARIO = import.meta.env.VITE_MOCK_SCENARIO || "demo";
 
 /** Fetch the home layout (rooms / nodes / links / resident track). */
 export async function getLayout(homeId = DEFAULT_HOME) {
@@ -69,7 +72,7 @@ export function openLiveFeed(homeId, onMessage, opts = {}) {
 }
 
 function replayMock(onMessage, intervalMs, opts) {
-  const frames = opts.frames || mockFrameStream();
+  const frames = opts.frames || mockFrameStream(opts.scenario || MOCK_SCENARIO);
   const setTimer = opts.setInterval || setInterval;
   const clearTimer = opts.clearInterval || clearInterval;
   let i = 0;

@@ -35,7 +35,7 @@ export const mockLayout = {
 function activity(ts, hotRoom, tracks, opts = {}) {
   const rooms = mockLayout.rooms.map((r) => ({
     room: r.id,
-    activity_index: r.id === hotRoom ? opts.heat ?? 70 : 5,
+    activity_index: r.id === hotRoom ? opts.heat ?? 70 : (opts.ambient ?? 5),
     occupancy_count: opts.occupancy?.[r.id] ?? (tracks.some((t) => t.room === r.id) ? 1 : 0),
   }));
   return {
@@ -73,10 +73,10 @@ const guest = (n, room) => ({
 });
 
 /**
- * Looping scripted scenario, one entry per 1 Hz tick (each entry is an array of
- * WS messages emitted that tick). The render loop interpolates between ticks.
+ * The original scripted multi-room demo: idle → movement → guest → fall → recover.
+ * One entry per 1 Hz tick (each entry is an array of WS messages emitted that tick).
  */
-export function mockFrameStream() {
+function demoScenario() {
   return [
     // resident pottering in the kitchen
     [activity(1, "kitchen", [A("kitchen")])],
@@ -138,4 +138,50 @@ export function mockFrameStream() {
     ],
     [activity(12, "bedroom", [A("bedroom")], { heat: 30 })],
   ];
+}
+
+/**
+ * REAL captured walk — node 1 (Kitchen), 2026-06-12. The `activity_index` values
+ * are ACTUAL, computed from a recorded ESP32 packet stream under the live feed's
+ * ACTIVITY_REF=1500 / ACTIVITY_WINDOW_SECS=8. A person walks through the kitchen
+ * then leaves: activity ramps to ~90 and decays smoothly, presence latches at 0.9
+ * and ages out. Source: esp32-presence-node/data/captured_readings.csv. Unlike the
+ * demo, this is a single-node presence reading — no respiration/heart, so the HUD
+ * vitals show "—" (honest for these nodes).
+ */
+function kitchenWalkScenario() {
+  const ai =    [93, 86, 71, 72, 81, 84, 81, 71, 60, 50, 45, 35, 21, 8, 1, 0, 0];
+  const score = [0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.8, 0.7, 0.6, 0.5, 0.5, 0.5, 0.5, 0.5, 0.39, 0.29];
+  return ai.map((heat, t) => {
+    const present = score[t] >= 0.4; // TRACK_CONF_MIN
+    // Wander within the kitchen (node ~0.25,0.25). u/v are 0..1 layout coords;
+    // the renderer places the figure here instead of the room centre, so it moves
+    // around the room. NOTE: real single-node data has no in-room position — this
+    // previews what multi-node localization will look like.
+    const u = 0.25 + 0.11 * Math.sin(t * 0.7);
+    const v = 0.25 + 0.09 * Math.cos(t * 0.55);
+    const tracks = present
+      ? [{ track_id: "A", label: "A", room: "kitchen", u, v, confidence: score[t],
+           // state stays in the documented enum {normal, fall_watch, guest};
+           // posture is NOT a track state (single-node data can't infer it) and
+           // the HUD renders state verbatim, so we keep it honest as "normal".
+           identity_confidence: 0.9, state: "normal" }]
+      : [];
+    return [activity(t, "kitchen", tracks, { heat, ambient: 0 })];
+  });
+}
+
+// Selectable mock scenarios. Pick one with VITE_MOCK_SCENARIO (see api.js).
+const SCENARIOS = {
+  demo: demoScenario,
+  "kitchen-walk": kitchenWalkScenario,
+};
+export const MOCK_SCENARIOS = Object.keys(SCENARIOS);
+
+/**
+ * Looping scripted scenario, one entry per 1 Hz tick. `scenario` selects which
+ * (default "demo"); unknown names fall back to the demo so callers never break.
+ */
+export function mockFrameStream(scenario = "demo") {
+  return (SCENARIOS[scenario] || demoScenario)();
 }

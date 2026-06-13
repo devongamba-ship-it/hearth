@@ -8,7 +8,7 @@
 import { VIEWS } from "../lib/views.js";
 import { FIGURE_STYLES } from "../lib/figures.js";
 
-const VIEW_LABELS = { birdseye: "Bird's eye", ground: "Ground", orbit: "Orbit" };
+const VIEW_LABELS = { birdseye: "Bird's eye", ground: "Ground", orbit: "Orbit", field: "Field" };
 const STYLE_LABELS = { capsule: "Capsule", column: "Column", marker: "Marker" };
 
 export default function ViewBar({ view, onView, style, onStyle, fallWatch }) {

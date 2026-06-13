@@ -9,8 +9,15 @@
 
 import { FLOOR_SIZE } from "./layout.js";
 
-export const VIEWS = ["birdseye", "ground", "orbit"];
+export const VIEWS = ["birdseye", "ground", "orbit", "field"];
 export const DEFAULT_VIEW = "birdseye";
+
+// The sensing-field particle grid is drawn ONLY in the Field view (it is dense
+// and view-specific). Pure predicate so the gating decision is unit-testable
+// without a WebGL context (the renderer just applies it).
+export function shouldShowField(view) {
+  return view === "field";
+}
 
 export const GROUND_EYE_HEIGHT = 1.4; // metres — camera height in ground view
 const ORBIT_RADIUS = FLOOR_SIZE * 0.85;
@@ -41,16 +48,28 @@ export function cameraFor(view, opts = {}) {
   if (view === "ground") {
     // Eye height, standing a short distance from the resident and looking at
     // them — the camera tracks the follow target.
-    const back = 2.5;
-    const angle = orbitAngle; // lets demos slowly arc the ground cam too
+    const back = 4.5; // stand well off the resident so the figure isn't filling the lens
+    const angle = orbitAngle; // slow arc around the resident
     return {
       position: [
         target.x + Math.cos(angle) * back,
-        GROUND_EYE_HEIGHT,
+        GROUND_EYE_HEIGHT + 0.4,
         target.z + Math.sin(angle) * back,
       ],
-      lookAt: [target.x, GROUND_EYE_HEIGHT * 0.8, target.z],
-      fov: 60,
+      lookAt: [target.x, GROUND_EYE_HEIGHT * 0.7, target.z],
+      fov: 55,
+    };
+  }
+
+  if (view === "field") {
+    // Oblique low orbit, close to the floor, to read the 3D sensing-field ridge
+    // (height reads best at a shallow angle, not from straight above).
+    const r = FLOOR_SIZE * 0.78;
+    const hgt = FLOOR_SIZE * 0.32;
+    return {
+      position: [Math.cos(orbitAngle) * r, hgt, Math.sin(orbitAngle) * r],
+      lookAt: [0, 0.6, 0],
+      fov: 55,
     };
   }
 
