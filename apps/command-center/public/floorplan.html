@@ -1,0 +1,183 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Hearth — Floor Plan Editor</title>
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;background:#05070d;color:#cfe6ff;font:14px/1.45 ui-monospace,Consolas,monospace}
+  header{padding:10px 16px;border-bottom:1px solid #14304a;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  h1{font-size:15px;margin:0;color:#7fe6ff;letter-spacing:.5px}
+  input,select,button{font:inherit;background:#0b1422;color:#cfe6ff;border:1px solid #2a5f86;border-radius:5px;padding:4px 9px}
+  button{cursor:pointer}
+  button.on{background:#0c3b52;border-color:#39d0ff;color:#bff0ff}
+  button.warn{border-color:#7a3b3b;color:#ffb3b3}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .sub{color:#5b7da0;font-size:12px}
+  main{display:flex;gap:16px;padding:14px 16px;align-items:flex-start;flex-wrap:wrap}
+  #wrap{position:relative;border:1px solid #14304a;border-radius:6px;background:#070b14}
+  canvas{display:block;border-radius:6px;cursor:crosshair}
+  aside{width:360px;max-width:100%}
+  textarea{width:100%;height:330px;background:#070b14;color:#9fe0c0;border:1px solid #14304a;border-radius:6px;padding:8px;font:12px/1.4 ui-monospace,monospace}
+  .hint{color:#5b7da0;font-size:12px;margin:6px 0}
+  .tag{display:inline-block;padding:1px 7px;border-radius:9px;border:1px solid #2a5f86;font-size:12px}
+</style></head>
+<body>
+<header>
+  <h1>&#9632; HEARTH FLOOR PLAN</h1>
+  <label class="row">home <input id="home" value="My Home" size="14"></label>
+  <span class="row">floor
+    <select id="floor"></select>
+    <button id="addFloor" title="add a floor">+ floor</button>
+  </span>
+  <span class="row" style="margin-left:8px">
+    <button id="mRoom" class="on">Draw room</button>
+    <button id="mNode">Place node</button>
+    <button id="mDel" class="warn">Delete</button>
+  </span>
+  <span class="row" style="margin-left:auto">
+    <button id="loadEx">Load example</button>
+    <button id="clear" class="warn">Clear</button>
+  </span>
+</header>
+<main>
+  <div>
+    <div id="wrap"><canvas id="c" width="760" height="540"></canvas></div>
+    <div class="hint" id="status">Draw room: drag a rectangle, then name it. Place node: click inside a room. Delete: click an item.</div>
+  </div>
+  <aside>
+    <div class="row"><b>layout.yaml</b> <span class="sub">— copy into your HEARTH_LAYOUT_FILE</span></div>
+    <textarea id="yaml" readonly></textarea>
+    <div class="row" style="margin-top:8px">
+      <button id="copy">Copy YAML</button>
+      <span class="sub" id="counts"></span>
+    </div>
+    <div class="hint">x/y/w/h are 0..1 of your home's footprint (top-left origin). Floors are separate planes — switch floors to lay out each. Links are auto-discovered later (mesh walk-through), so they're left empty.</div>
+  </aside>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const c=$('c'), ctx=c.getContext('2d');
+const W=c.width, H=c.height;
+const PALETTE=['#22d3c5','#a855f7','#f59e0b','#38bdf8','#34d399','#fb7185','#c084fc','#facc15'];
+let rooms=[], nodes=[], mode='room', floor=0, floors=[0], drag=null, hover=null;
+
+function slug(s){return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'room';}
+function uniqId(base){let id=base,i=2;while(rooms.some(r=>r.id===id))id=base+'-'+(i++);return id;}
+function f(n){return Math.round(n*1000)/1000;}
+function u(x){return x/W;} function v(y){return y/H;}
+function roomAt(uu,vv,fl){ // topmost room on floor fl containing point
+  for(let i=rooms.length-1;i>=0;i--){const r=rooms[i];
+    if(r.floor===fl && uu>=r.x&&uu<=r.x+r.w&&vv>=r.y&&vv<=r.y+r.h)return r;} return null;}
+function nodeAt(uu,vv,fl){ for(let i=nodes.length-1;i>=0;i--){const n=nodes[i];
+  if(n.floor===fl && Math.hypot((uu-n.x)*W,(vv-n.y)*H)<12)return n;} return null;}
+
+function refreshFloors(){
+  const sel=$('floor'); sel.innerHTML='';
+  floors.forEach(fl=>{const o=document.createElement('option');o.value=fl;o.textContent='Floor '+fl;sel.appendChild(o);});
+  sel.value=floor;
+}
+function setMode(m){mode=m;['mRoom','mNode','mDel'].forEach(id=>$(id).classList.remove('on'));
+  $({room:'mRoom',node:'mNode',del:'mDel'}[m]).classList.add('on');
+  c.style.cursor = m==='del'?'not-allowed':(m==='node'?'pointer':'crosshair');}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  // grid
+  ctx.strokeStyle='#10233a';ctx.lineWidth=1;
+  for(let i=1;i<10;i++){const x=W*i/10,y=H*i/10;
+    ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  ctx.strokeStyle='#1d4060';ctx.strokeRect(.5,.5,W-1,H-1);
+  // rooms (current floor solid, others faint)
+  for(const r of rooms){
+    const on=r.floor===floor;
+    ctx.globalAlpha=on?1:0.18;
+    ctx.fillStyle=r.color+'33';ctx.fillRect(r.x*W,r.y*H,r.w*W,r.h*H);
+    ctx.strokeStyle=r.color;ctx.lineWidth=on?2:1;ctx.strokeRect(r.x*W,r.y*H,r.w*W,r.h*H);
+    ctx.fillStyle=on?'#cfe6ff':'#46637f';ctx.font='13px ui-monospace,monospace';
+    ctx.fillText(r.name,r.x*W+6,r.y*H+18);
+    ctx.globalAlpha=1;
+  }
+  // nodes
+  for(const n of nodes){
+    const on=n.floor===floor; ctx.globalAlpha=on?1:0.18;
+    ctx.fillStyle='#39d0ff';ctx.shadowColor='#39d0ff';ctx.shadowBlur=on?8:0;
+    ctx.beginPath();ctx.arc(n.x*W,n.y*H,6,0,7);ctx.fill();ctx.shadowBlur=0;
+    ctx.fillStyle='#cfe6ff';ctx.font='11px ui-monospace,monospace';ctx.fillText(String(n.id),n.x*W+9,n.y*H+4);
+    ctx.globalAlpha=1;
+  }
+  // drag preview
+  if(drag){const x=Math.min(drag.x0,drag.x1),y=Math.min(drag.y0,drag.y1),
+    w=Math.abs(drag.x1-drag.x0),h=Math.abs(drag.y1-drag.y0);
+    ctx.setLineDash([5,4]);ctx.strokeStyle='#7fe6ff';ctx.lineWidth=1.5;ctx.strokeRect(x,y,w,h);ctx.setLineDash([]);}
+  $('counts').textContent=`${rooms.length} rooms · ${nodes.length} nodes · ${floors.length} floor(s)`;
+  $('yaml').value=toYaml();
+}
+
+c.addEventListener('mousedown',e=>{
+  const r=c.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;
+  if(mode==='room'){drag={x0:x,y0:y,x1:x,y1:y};}
+  else if(mode==='node'){
+    const uu=u(x),vv=v(y),rm=roomAt(uu,vv,floor);
+    if(!rm){$('status').textContent='Place the node INSIDE a room (draw the room first).';return;}
+    const id=(nodes.reduce((m,n)=>Math.max(m,n.id),0))+1;
+    nodes.push({id,x:f(uu),y:f(vv),room:rm.id,floor});draw();
+  } else if(mode==='del'){
+    const uu=u(x),vv=v(y),n=nodeAt(uu,vv,floor);
+    if(n){nodes.splice(nodes.indexOf(n),1);draw();return;}
+    const rm=roomAt(uu,vv,floor);
+    if(rm){nodes=nodes.filter(nd=>!(nd.room===rm.id&&nd.floor===rm.floor));
+      rooms.splice(rooms.indexOf(rm),1);draw();}
+  }
+});
+c.addEventListener('mousemove',e=>{if(!drag)return;const r=c.getBoundingClientRect();
+  drag.x1=e.clientX-r.left;drag.y1=e.clientY-r.top;draw();});
+window.addEventListener('mouseup',()=>{
+  if(!drag)return;
+  const x=Math.min(drag.x0,drag.x1),y=Math.min(drag.y0,drag.y1),
+        w=Math.abs(drag.x1-drag.x0),h=Math.abs(drag.y1-drag.y0);
+  drag=null;
+  if(w<14||h<14){draw();return;}
+  const name=prompt('Room name?','Room '+(rooms.length+1));
+  if(name===null){draw();return;}
+  rooms.push({id:uniqId(slug(name)),name:name||('Room '+(rooms.length+1)),
+    floor,bedroom:/bed/i.test(name),x:f(u(x)),y:f(v(y)),w:f(u(w)),h:f(v(h)),
+    color:PALETTE[rooms.length%PALETTE.length]});
+  draw();
+});
+
+function toYaml(){
+  const home=$('home').value||'My Home';
+  let s=`home_id: ${slug(home)}\nname: ${home}\n\nrooms:\n`;
+  if(!rooms.length)s+=`  []\n`;
+  for(const r of rooms){
+    s+=`  - id: ${r.id}\n    name: ${r.name}\n    floor: ${r.floor}\n`;
+    if(r.bedroom)s+=`    bedroom: true\n`;
+    s+=`    rect: {x: ${f(r.x)}, y: ${f(r.y)}, w: ${f(r.w)}, h: ${f(r.h)}}\n`;
+  }
+  s+=`nodes:\n`; if(!nodes.length)s+=`  []\n`;
+  for(const n of nodes)s+=`  - {id: ${n.id}, room: ${n.room}, x: ${f(n.x)}, y: ${f(n.y)}, floor: ${n.floor}}\n`;
+  s+=`links: []   # auto-discovered after a walk-through (mesh_check.py)\nresident:\n  track_label: A\n  identity_confidence: 0.9\n`;
+  return s;
+}
+
+$('mRoom').onclick=()=>setMode('room');
+$('mNode').onclick=()=>setMode('node');
+$('mDel').onclick=()=>setMode('del');
+$('home').oninput=draw;
+$('floor').onchange=e=>{floor=+e.target.value;draw();};
+$('addFloor').onclick=()=>{const nf=floors.length;floors.push(nf);floor=nf;refreshFloors();draw();};
+$('clear').onclick=()=>{if(confirm('Clear everything?')){rooms=[];nodes=[];floors=[0];floor=0;refreshFloors();draw();}};
+$('copy').onclick=()=>{$('yaml').select();document.execCommand('copy');$('copy').textContent='Copied!';setTimeout(()=>$('copy').textContent='Copy YAML',1200);};
+$('loadEx').onclick=()=>{
+  rooms=[
+    {id:'living',name:'Living room',floor:0,bedroom:false,x:.0,y:.45,w:.55,h:.55,color:PALETTE[0]},
+    {id:'kitchen',name:'Kitchen',floor:0,bedroom:false,x:0,y:0,w:.40,h:.40,color:PALETTE[1]},
+    {id:'bedroom',name:'Bedroom',floor:0,bedroom:true,x:.45,y:0,w:.55,h:.45,color:PALETTE[2]},
+    {id:'bathroom',name:'Bathroom',floor:0,bedroom:false,x:.62,y:.55,w:.30,h:.30,color:PALETTE[3]},
+  ];
+  nodes=[{id:1,room:'kitchen',x:.2,y:.2,floor:0},{id:2,room:'bedroom',x:.72,y:.2,floor:0},
+    {id:3,room:'bathroom',x:.77,y:.7,floor:0},{id:4,room:'living',x:.27,y:.72,floor:0}];
+  floors=[0];floor=0;refreshFloors();draw();
+};
+refreshFloors();setMode('room');draw();
+</script></body></html>
