@@ -1,0 +1,66 @@
+# Hearth home layout — EXAMPLE / TEMPLATE (the "fast", hand-edit path).
+#
+# Copy this to your real layout file (e.g. C:\Users\devon\hearth-config\layout.yaml),
+# edit it to match YOUR home, then point HEARTH_LAYOUT_FILE at it. The command
+# center renders exactly what you describe here — so it stops looking like four
+# equal squares and starts looking like your actual place.
+#
+# COORDINATES: a 0..1 "unit square" — picture your home's footprint as a 1x1 box.
+#   x grows RIGHT, y grows DOWN (top-left corner = 0,0). Only relative sizes and
+#   positions matter; the screen scales it to fit.
+
+home_id: gamba
+name: Gamba residence
+
+# ROOMS — give each a real rectangle so the floor plan matches your home.
+#   rect = {x, y, w, h} in 0..1  (top-left corner + width/height)
+#   floor = level index (0 = ground floor, 1 = upstairs, ...)
+#   bedroom: true  marks sleep rooms (used by quiet-hours suppression)
+#   Omit `rect` to let a room auto-size around its node (the old behaviour).
+#
+# Tip: a studio is just ONE big rect. An L-shaped room can be two rooms that
+#      share a name, or wait for polygon support (roadmap).
+rooms:
+  - id: living
+    name: Living room
+    floor: 0
+    rect: {x: 0.00, y: 0.45, w: 0.55, h: 0.55}   # the big one, bottom-left
+  - id: kitchen
+    name: Kitchen
+    floor: 0
+    rect: {x: 0.00, y: 0.00, w: 0.40, h: 0.40}   # top-left
+  - id: bedroom
+    name: Bedroom
+    floor: 0
+    bedroom: true
+    rect: {x: 0.45, y: 0.00, w: 0.55, h: 0.45}   # top-right
+  - id: bathroom
+    name: Bathroom
+    floor: 0
+    rect: {x: 0.62, y: 0.55, w: 0.30, h: 0.30}   # small, bottom-right
+  # --- multi-floor example (uncomment) ---
+  # - id: loft
+  #   name: Loft
+  #   floor: 1
+  #   rect: {x: 0.20, y: 0.20, w: 0.60, h: 0.60}
+
+# NODES — which ESP32 sits in which room. x/y = where the board physically sits
+# on the 0..1 plane; floor = its level. ids must match the NODE_ID you flash.
+nodes:
+  - {id: 1, room: kitchen,  x: 0.20, y: 0.20, floor: 0}
+  - {id: 2, room: bedroom,  x: 0.72, y: 0.20, floor: 0}
+  - {id: 3, room: bathroom, x: 0.77, y: 0.70, floor: 0}
+  - {id: 4, room: living,   x: 0.27, y: 0.72, floor: 0}
+
+# LINKS — node pairs that hear each other (the sensing paths). You can leave this
+# empty and let the mesh auto-discovery (mesh_check.py / onboarding) fill it in
+# after a 60-second walk-through.
+links:
+  - [1, 4]
+  - [4, 3]
+  - [3, 2]
+  - [2, 1]
+
+resident:
+  track_label: A
+  identity_confidence: 0.9

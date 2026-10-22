@@ -10,11 +10,14 @@
 export const mockLayout = {
   home_id: "rosewood",
   name: "Rosewood",
+  // Rooms carry real geometry (rect {x,y,w,h} in 0..1) + floor, so the demo home
+  // reads like an actual apartment — a large living room, a small bathroom — not
+  // four equal squares. A real home's rect/floor come from onboarding (next).
   rooms: [
-    { id: "kitchen", name: "Kitchen", bedroom: false },
-    { id: "living", name: "Living room", bedroom: false },
-    { id: "bedroom", name: "Bedroom", bedroom: true },
-    { id: "bathroom", name: "Bathroom", bedroom: false },
+    { id: "kitchen", name: "Kitchen", bedroom: false, floor: 0, rect: { x: 0.05, y: 0.05, w: 0.40, h: 0.35 } },
+    { id: "living", name: "Living room", bedroom: false, floor: 0, rect: { x: 0.05, y: 0.45, w: 0.55, h: 0.50 } },
+    { id: "bedroom", name: "Bedroom", bedroom: true, floor: 0, rect: { x: 0.50, y: 0.05, w: 0.45, h: 0.45 } },
+    { id: "bathroom", name: "Bathroom", bedroom: false, floor: 0, rect: { x: 0.65, y: 0.55, w: 0.30, h: 0.30 } },
   ],
   nodes: [
     { id: 1, room: "kitchen", x: 0.25, y: 0.25 },

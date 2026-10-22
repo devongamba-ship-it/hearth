@@ -32,6 +32,11 @@ class Room:
     id: str
     name: str
     bedroom: bool = False
+    floor: int = 0
+    # Optional real geometry: (x, y, w, h) in 0..1 unit-square coords. When set,
+    # the client draws the room at this rect instead of an auto-derived square,
+    # so the floor plan matches an actual home.
+    rect: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +45,7 @@ class Node:
     room: str  # room id
     x: float | None = None
     y: float | None = None
+    floor: int = 0
 
 
 @dataclass(frozen=True)
@@ -79,10 +85,19 @@ class HomeLayout:
             "home_id": self.home_id,
             "name": self.name,
             "rooms": [
-                {"id": r.id, "name": r.name, "bedroom": r.bedroom} for r in self.rooms
+                {
+                    "id": r.id, "name": r.name, "bedroom": r.bedroom, "floor": r.floor,
+                    **(
+                        {"rect": {"x": r.rect[0], "y": r.rect[1],
+                                  "w": r.rect[2], "h": r.rect[3]}}
+                        if r.rect else {}
+                    ),
+                }
+                for r in self.rooms
             ],
             "nodes": [
-                {"id": n.id, "room": n.room, "x": n.x, "y": n.y} for n in self.nodes
+                {"id": n.id, "room": n.room, "x": n.x, "y": n.y, "floor": n.floor}
+                for n in self.nodes
             ],
             "links": [{"a": a, "b": b} for a, b in self.links],
             "resident": {
@@ -114,17 +129,29 @@ class HomeLayout:
         return cls(home_id=home_id, name=home_id, rooms=rooms, nodes=nodes, links=())
 
 
+def _parse_rect(rect) -> tuple[float, float, float, float] | None:
+    if isinstance(rect, dict) and all(k in rect for k in ("x", "y", "w", "h")):
+        return (float(rect["x"]), float(rect["y"]), float(rect["w"]), float(rect["h"]))
+    return None
+
+
+def _parse_room(r: dict) -> Room:
+    return Room(
+        id=str(r["id"]),
+        name=str(r.get("name", r["id"])),
+        bedroom=bool(r.get("bedroom", False)),
+        floor=int(r.get("floor", 0)),
+        rect=_parse_rect(r.get("rect")),
+    )
+
+
 def _parse(data: dict) -> HomeLayout:
     if not isinstance(data, dict):
         raise ValueError("layout must be a mapping")
-    rooms = tuple(
-        Room(id=str(r["id"]), name=str(r.get("name", r["id"])),
-             bedroom=bool(r.get("bedroom", False)))
-        for r in data.get("rooms", [])
-    )
+    rooms = tuple(_parse_room(r) for r in data.get("rooms", []))
     nodes = tuple(
         Node(id=int(n["id"]), room=str(n["room"]),
-             x=n.get("x"), y=n.get("y"))
+             x=n.get("x"), y=n.get("y"), floor=int(n.get("floor", 0)))
         for n in data.get("nodes", [])
     )
     links = tuple(

@@ -101,14 +101,27 @@ export function layoutToScene(layout) {
   }
 
   const sceneRooms = rooms.map((r, i) => {
-    const roomNodes = nodesByRoom.get(r.id) ?? [];
-    const fp = roomFootprint(roomNodes, centerOf(i));
+    // Explicit room geometry wins over node-derived squares: a `rect` {x,y,w,h}
+    // in 0..1 unit-square coords lets a layout describe a REAL home (large living
+    // room, small bathroom, a studio = one rectangle) instead of equal auto-tiles.
+    // Falls back to the node bounding box when no rect is given.
+    let fp;
+    if (r.rect && r.rect.w > 0 && r.rect.h > 0) {
+      fp = {
+        min: { u: clamp01(r.rect.x), v: clamp01(r.rect.y) },
+        max: { u: clamp01(r.rect.x + r.rect.w), v: clamp01(r.rect.y + r.rect.h) },
+      };
+    } else {
+      const roomNodes = nodesByRoom.get(r.id) ?? [];
+      fp = roomFootprint(roomNodes, centerOf(i));
+    }
     const centerU = (fp.min.u + fp.max.u) / 2;
     const centerV = (fp.min.v + fp.max.v) / 2;
     return {
       id: r.id,
       name: r.name ?? r.id,
       bedroom: !!r.bedroom,
+      floor: r.floor ?? 0, // level index; foundation for multi-floor homes
       footprint: {
         min: pointToWorld(fp.min.u, fp.min.v),
         max: pointToWorld(fp.max.u, fp.max.v),
@@ -124,7 +137,7 @@ export function layoutToScene(layout) {
     const u = n.x ?? 0.5;
     const v = n.y ?? 0.5;
     const world = pointToWorld(u, v);
-    const sn = { id: n.id, room: n.room, ...world };
+    const sn = { id: n.id, room: n.room, floor: n.floor ?? 0, ...world };
     nodeById.set(n.id, world);
     return sn;
   });
